@@ -594,15 +594,41 @@ def call_openrouter(model: str, system_prompt: str, user_prompt: str, temperatur
         raise RuntimeError(f"Erro inesperado na chamada da API: {e}")
 
 def clean_json_response(content: str) -> str:
-    """Remove marcadores de código markdown do JSON"""
-    clean_content = content.strip()
-    if clean_content.startswith("```json"):
-        clean_content = clean_content[7:]
-    if clean_content.startswith("```"):
-        clean_content = clean_content[3:]
-    if clean_content.endswith("```"):
-        clean_content = clean_content[:-3]
-    return clean_content.strip()
+    """Extrai JSON de uma resposta que pode conter markdown e texto adicional"""
+    content = content.strip()
+    
+    # Procura por blocos JSON em markdown
+    import re
+    
+    # Padrão 1: ```json ... ```
+    json_pattern = r'```json\s*\n(.*?)\n```'
+    match = re.search(json_pattern, content, re.DOTALL)
+    if match:
+        json_content = match.group(1).strip()
+        print(f"✅ JSON extraído do markdown (```json): {len(json_content)} chars")
+        return json_content
+    
+    # Padrão 2: ``` ... ``` (sem especificar json)
+    json_pattern = r'```\s*\n(.*?)\n```'
+    match = re.search(json_pattern, content, re.DOTALL)
+    if match:
+        candidate = match.group(1).strip()
+        # Verifica se parece com JSON (começa com { ou [)
+        if candidate.startswith('{') or candidate.startswith('['):
+            print(f"✅ JSON extraído do markdown (```): {len(candidate)} chars")
+            return candidate
+    
+    # Padrão 3: Procura por { ... } que parece ser JSON
+    json_pattern = r'\{.*\}'
+    match = re.search(json_pattern, content, re.DOTALL)
+    if match:
+        candidate = match.group(0).strip()
+        print(f"✅ JSON extraído por regex {{...}}: {len(candidate)} chars")
+        return candidate
+    
+    # Se não encontrou nada, retorna o conteúdo original
+    print(f"⚠️ Nenhum JSON encontrado, retornando conteúdo original: {len(content)} chars")
+    return content
 
 # =========================
 # Prompting
