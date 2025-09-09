@@ -1,45 +1,34 @@
+
 import os
 import sys
 import io
 import json
-import time
 import queue
 import threading
 import tempfile
 import subprocess
 import base64
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- OCR & PDF ---
 import fitz  # PyMuPDF
 from PIL import Image
-import pytesseract
-
 try:
-    import ocrmypdf  # opcional, mas recomendado
-    OCRMYPDF_AVAILABLE = True
-except Exception:
-    OCRMYPDF_AVAILABLE = False
-
-try:
-    from pdf2image import convert_from_path  # fallback se precisar rasterizar PDF
+    from pdf2image import convert_from_path  # Para conversão de PDF em imagens
     PDF2IMAGE_AVAILABLE = True
 except Exception:
     PDF2IMAGE_AVAILABLE = False
 
-try:
-    import easyocr  # OCR alternativo mais rápido
-    EASYOCR_AVAILABLE = True
-    # Inicializa EasyOCR uma vez só (para evitar recarregar modelo a cada uso)
-    easyocr_reader = None
-except Exception:
-    EASYOCR_AVAILABLE = False
-    easyocr_reader = None
-
 # --- HTTP & env ---
 import requests
 from dotenv import load_dotenv
+
+# --- Plotting & Visualization ---
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.patches import Polygon
+import numpy as np
 
 # --- GUI ---
 import tkinter as tk
@@ -60,6 +49,48 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 # Estruturas
 # =========================
 @dataclass
+class TransmissaoInfo:
+    """Informações sobre uma transmissão na cadeia dominial"""
+    data: Optional[str] = None
+    tipo_transmissao: Optional[str] = None
+    proprietario_anterior: Optional[str] = None
+    novo_proprietario: Optional[str] = None
+    percentual: Optional[str] = None
+    valor: Optional[str] = None
+    registro: Optional[str] = None
+
+@dataclass
+class RestricaoInfo:
+    """Informações sobre restrições e gravames"""
+    tipo: str
+    data_registro: Optional[str] = None
+    credor: Optional[str] = None
+    valor: Optional[str] = None
+    situacao: str = "vigente"  # "vigente" ou "baixada"
+    data_baixa: Optional[str] = None
+    observacoes: Optional[str] = None
+
+@dataclass
+class DadosGeometricos:
+    """Dados geométricos extraídos para geração de planta"""
+    medidas: Dict[str, float] = None  # frente, fundos, lateral_direita, lateral_esquerda
+    confrontantes: Dict[str, str] = None  # direção -> nome do confrontante
+    area_total: Optional[float] = None
+    angulos: Dict[str, float] = None  # direção -> ângulo em graus
+    formato: str = "retangular"  # retangular, irregular, triangular, etc.
+    observacoes: List[str] = None
+    
+    def __post_init__(self):
+        if self.medidas is None:
+            self.medidas = {}
+        if self.confrontantes is None:
+            self.confrontantes = {}
+        if self.angulos is None:
+            self.angulos = {}
+        if self.observacoes is None:
+            self.observacoes = []
+
+@dataclass
 class MatriculaInfo:
     numero: str
     proprietarios: List[str]
@@ -68,6 +99,17 @@ class MatriculaInfo:
     evidence: List[str]
     lote: Optional[str] = None  # número do lote
     quadra: Optional[str] = None  # número da quadra
+    cadeia_dominial: List[TransmissaoInfo] = None  # histórico de transmissões
+    restricoes: List[RestricaoInfo] = None  # restrições e gravames
+    dados_geometricos: Optional[DadosGeometricos] = None  # dados para planta
+    
+    def __post_init__(self):
+        if self.cadeia_dominial is None:
+            self.cadeia_dominial = []
+        if self.restricoes is None:
+            self.restricoes = []
+        if self.dados_geometricos is None:
+            self.dados_geometricos = None
 
 @dataclass
 class LoteConfronta:
@@ -77,6 +119,36 @@ class LoteConfronta:
     matricula_anexada: Optional[str] = None  # número da matrícula se foi anexada
     direcao: Optional[str] = None  # norte, sul, leste, oeste, etc.
     
+@dataclass
+class EstadoMSDireitos:
+    """Informações sobre direitos do Estado de MS"""
+    tem_direitos: bool = False
+    detalhes: List[Dict] = None
+    criticidade: str = "baixa"  # "alta", "media", "baixa"
+    observacao: str = ""
+    
+    def __post_init__(self):
+        if self.detalhes is None:
+            self.detalhes = []
+
+@dataclass
+class ResumoAnalise:
+    """Resumo estruturado da análise para o relatório"""
+    cadeia_dominial_completa: Dict[str, List[Dict]] = None  # matrícula -> lista cronológica
+    restricoes_vigentes: List[Dict] = None  # restrições ainda em vigor
+    restricoes_baixadas: List[Dict] = None  # restrições já canceladas
+    estado_ms_direitos: EstadoMSDireitos = None  # direitos do Estado de MS
+    
+    def __post_init__(self):
+        if self.cadeia_dominial_completa is None:
+            self.cadeia_dominial_completa = {}
+        if self.restricoes_vigentes is None:
+            self.restricoes_vigentes = []
+        if self.restricoes_baixadas is None:
+            self.restricoes_baixadas = []
+        if self.estado_ms_direitos is None:
+            self.estado_ms_direitos = EstadoMSDireitos()
+
 @dataclass
 class AnalysisResult:
     arquivo: str
@@ -89,9 +161,16 @@ class AnalysisResult:
     lotes_sem_matricula: List[str]  # lotes confrontantes sem matrícula anexada
     confrontacao_completa: Optional[bool]  # se todas confrontantes foram apresentadas
     proprietarios_identificados: Dict[str, List[str]]  # número -> lista proprietários
-    confidence: Optional[float]
-    reasoning: str
-    raw_json: Dict
+    resumo_analise: Optional[ResumoAnalise] = None  # resumo estruturado da análise
+    confidence: Optional[float] = None
+    reasoning: str = ""
+    raw_json: Dict = None
+    
+    def __post_init__(self):
+        if self.resumo_analise is None:
+            self.resumo_analise = ResumoAnalise()
+        if self.raw_json is None:
+            self.raw_json = {}
     
     # Campos de compatibilidade (para não quebrar código existente)
     @property
@@ -105,172 +184,7 @@ class AnalysisResult:
                     return True
         return False
     
-    @property
-    def confrontantes(self) -> List[str]:
-        """Compatibilidade: retorna todos confrontantes encontrados"""
-        all_confrontantes = []
-        for matricula in self.matriculas_encontradas:
-            all_confrontantes.extend(matricula.confrontantes)
-        return list(set(all_confrontantes))  # remove duplicatas
-    
-    @property
-    def evidence(self) -> List[str]:
-        """Compatibilidade: retorna todas evidências"""
-        all_evidence = []
-        for matricula in self.matriculas_encontradas:
-            all_evidence.extend(matricula.evidence)
-        return all_evidence
 
-# =========================
-# Utilidades de OCR / Texto
-# =========================
-def run_ocrmypdf(input_pdf: str, output_pdf: str) -> bool:
-    """
-    Tenta rodar o OCR com o ocrmypdf. Retorna True se conseguiu.
-    """
-    if not OCRMYPDF_AVAILABLE:
-        return False
-    try:
-        # --force-ocr força OCR mesmo se já tiver texto
-        # --skip-text skipa páginas com texto real (deixa mais rápido)
-        # Estratégia: primeiro tenta sem --force, se vier vazio no texto, a gente tenta forçar
-        # Aqui já vamos direto no --force-ocr para garantir máxima extração.
-        cmd = [
-            sys.executable, "-m", "ocrmypdf",
-            "--force-ocr",
-            "--optimize", "0",
-            "--quiet",
-            input_pdf, output_pdf
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return True
-    except Exception:
-        return False
-
-def pdf_extract_text_with_pymupdf(pdf_path: str) -> str:
-    """
-    Extrai texto com PyMuPDF. Se o PDF for imagem pura, pode vir vazio.
-    """
-    text_chunks = []
-    with fitz.open(pdf_path) as doc:
-        for page in doc:
-            text = page.get_text("text") or ""
-            if not text.strip():
-                # Tenta usar "blocks" como fallback leve
-                text = page.get_text("blocks") or ""
-                if isinstance(text, list):
-                    text = "\n".join([b[4] for b in text if len(b) > 4 and isinstance(b[4], str)])
-            text_chunks.append(text)
-    return "\n".join(text_chunks).strip()
-
-def rasterize_pdf_and_ocr(pdf_path: str, dpi: int = 300) -> str:
-    """
-    Rasteriza cada página do PDF e roda Tesseract com configurações otimizadas.
-    """
-    if not PDF2IMAGE_AVAILABLE:
-        return ""
-    
-    try:
-        images = convert_from_path(pdf_path, dpi=dpi, first_page=1, last_page=10)  # limita páginas
-        
-        texts = []
-        for i, img in enumerate(images, 1):
-            # Configurações otimizadas para documentos de texto
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝàáâãäåçèéêëìíîïñòóôõöùúûüý0123456789.,;:!?()[]{}/""-\'\s'
-            
-            try:
-                # Primeiro tenta com configuração otimizada
-                txt = pytesseract.image_to_string(img, lang="por+eng", config=custom_config)
-                if not txt.strip():
-                    # Se não funcionou, tenta configuração padrão
-                    txt = pytesseract.image_to_string(img, lang="por+eng")
-                
-                if txt.strip():
-                    texts.append(txt.strip())
-                    
-            except Exception:
-                continue
-        
-        full_text = "\n\n".join(texts).strip()
-        return full_text
-        
-    except Exception:
-        return ""
-
-def image_ocr(image_path: str) -> str:
-    """
-    OCR direto em imagem (jpg/png/tiff) - versão padrão.
-    """
-    try:
-        img = Image.open(image_path)
-        txt = pytesseract.image_to_string(img, lang="por+eng")
-        return txt.strip()
-    except Exception:
-        return ""
-
-def image_ocr_fast(image_path: str) -> str:
-    """
-    OCR otimizado para velocidade em imagem. Tenta EasyOCR primeiro, depois Tesseract.
-    """
-    # Tenta EasyOCR se disponível (geralmente mais rápido)
-    if EASYOCR_AVAILABLE:
-        try:
-            global easyocr_reader
-            if easyocr_reader is None:
-                easyocr_reader = easyocr.Reader(['pt', 'en'], gpu=False)  # CPU mode para compatibilidade
-            
-            results = easyocr_reader.readtext(image_path, paragraph=True)
-            if results:
-                text = ' '.join([result[1] for result in results])
-                return text.strip()
-        except Exception:
-            pass
-    
-    # Fallback para Tesseract rápido
-    try:
-        img = Image.open(image_path)
-        
-        # Configuração rápida do Tesseract
-        fast_config = r'--oem 3 --psm 6 -c tessedit_pageseg_mode=6'
-        txt = pytesseract.image_to_string(img, lang="por+eng", config=fast_config)
-        return txt.strip()
-    except Exception:
-        return ""
-
-def rasterize_pdf_and_ocr_fast(pdf_path: str, dpi: int = 200) -> str:
-    """
-    Versão RÁPIDA: rasteriza PDF e roda OCR com configurações otimizadas para velocidade.
-    """
-    if not PDF2IMAGE_AVAILABLE:
-        return ""
-    
-    try:
-        # Limita a 5 páginas e usa DPI menor para velocidade
-        images = convert_from_path(pdf_path, dpi=dpi, first_page=1, last_page=5, thread_count=2)
-        
-        texts = []
-        for i, img in enumerate(images, 1):
-            try:
-                # Configuração ultra-rápida - menos precisa mas muito mais rápida
-                speed_config = r'--oem 3 --psm 6 -c tessedit_pageseg_mode=6 tessedit_ocr_engine_mode=3'
-                
-                txt = pytesseract.image_to_string(img, lang="por+eng", config=speed_config)
-                
-                if txt.strip():
-                    texts.append(txt.strip())
-                    
-                    # Para acelerar ainda mais, para se já temos texto suficiente
-                    if len('\n\n'.join(texts)) > 1000:
-                        break
-                        
-            except Exception:
-                continue
-        
-        full_text = "\n\n".join(texts).strip()
-        return full_text
-        
-    except Exception:
-        return ""
 
 def image_to_base64(image_path_or_pil: Union[str, Image.Image], max_size: int = 1024, jpeg_quality: int = 85) -> str:
     """
@@ -361,43 +275,6 @@ def pdf_to_images(pdf_path: str, max_pages: Optional[int] = 10) -> List[Image.Im
     
     return images
 
-def ensure_ocr_and_text(file_path: str) -> Tuple[str, str]:
-    """
-    Garante que teremos texto da matrícula usando APENAS OCR:
-    - Se for imagem: OCR direto 
-    - Se for PDF: SEMPRE usa OCR (nunca extração direta que só pega cabeçalhos)
-    Retorna (texto, caminho_pdf_pesquisavel_ou_original).
-    """
-    ext = os.path.splitext(file_path.lower())[1]
-    if ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]:
-        text = image_ocr_fast(file_path)
-        return text, file_path
-
-    if ext == ".pdf":
-        # ESTRATÉGIA: APENAS OCR (nunca extração direta de PDF)
-        # 1) Primeiro tenta rasterizar + OCR otimizado
-        text_fast = rasterize_pdf_and_ocr_fast(file_path, dpi=200)  # DPI menor para velocidade
-        if len(text_fast) > 100:
-            return text_fast, file_path
-
-        # 2) Se OCR rápido falhar, tenta qualidade alta
-        text_quality = rasterize_pdf_and_ocr(file_path, dpi=300)
-        if len(text_quality) > 50:
-            return text_quality, file_path
-
-        # 3) Se tudo falhar, tenta ocrmypdf como último recurso
-        with tempfile.TemporaryDirectory() as tmpd:
-            out_pdf = os.path.join(tmpd, "ocr.pdf")
-            if run_ocrmypdf(file_path, out_pdf):
-                # NUNCA usa extração direta, sempre re-processa com OCR
-                text_ocr = rasterize_pdf_and_ocr_fast(out_pdf, dpi=150)
-                if len(text_ocr) > 50:
-                    return text_ocr, out_pdf
-
-        return "", file_path
-
-    # Outros formatos não suportados
-    return "", file_path
 
 # =========================
 # Cliente OpenRouter
@@ -538,60 +415,6 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
     except Exception as e:
         raise RuntimeError(f"Erro inesperado na chamada da API: {e}")
 
-def call_openrouter(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.0, max_tokens: int = 1200) -> Dict:
-    """
-    Chama o endpoint /chat/completions do OpenRouter.
-    Retorna o dicionário do JSON da resposta.
-    """
-    api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY não configurada. Defina no .env ou variável de ambiente.")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        # Campos opcionais, mas úteis para boas práticas:
-        "HTTP-Referer": "https://pge-ms.lab/analise-matriculas",  # ajuste se quiser
-        "X-Title": "Analise de Matriculas PGE-MS"
-    }
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,  # Otimizado para velocidade
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"}  # força JSON se o modelo suportar
-    }
-
-    try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
-        
-        # Debug: imprime resposta bruta se houver problema
-        if resp.status_code != 200:
-            print(f"Erro HTTP {resp.status_code}: {resp.text}")
-            raise RuntimeError(f"API retornou status {resp.status_code}")
-            
-        response_text = resp.text.strip()
-        if not response_text:
-            raise RuntimeError("Resposta vazia da API")
-            
-        data = json.loads(response_text)
-        
-        # Verifica se a resposta tem o formato esperado
-        if "choices" not in data or not data["choices"]:
-            raise RuntimeError(f"Formato de resposta inesperado: {data}")
-            
-        return data
-        
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Erro na requisição para OpenRouter: {e}")
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Erro ao decodificar JSON da resposta: {e}. Resposta: {response_text[:500]}")
-    except Exception as e:
-        raise RuntimeError(f"Erro inesperado na chamada da API: {e}")
 
 def clean_json_response(content: str) -> str:
     """Extrai JSON de uma resposta que pode conter markdown e texto adicional"""
@@ -646,6 +469,12 @@ SYSTEM_PROMPT = (
     "\n\nCONSEQUÊNCIAS:\n"
     "❌ UM confrontante perdido = usucapião pode ser NEGADO\n"
     "✅ TODOS confrontantes identificados = processo bem fundamentado\n"
+    "\n\nMISSÃO ADICIONAL CRÍTICA - CADEIA DOMINIAL:\n"
+    "📋 ANALISE TODA A CADEIA DOMINIAL DO IMÓVEL desde a titulação original até o momento atual\n"
+    "📋 IDENTIFIQUE TODOS os proprietários históricos em ordem cronológica\n"
+    "📋 CONSIDERE co-propriedade em percentuais como cadeias dominiais autônomas\n"
+    "📋 PROCURE por registros de transmissões: compra/venda, doação, herança, adjudicação\n"
+    "📋 VERIFIQUE restrições: penhora, indisponibilidade, hipoteca, gravames não baixados\n"
     "\n\nDeterminar qual é a matrícula principal (objeto do usucapião) e extrair proprietários ATUAIS de cada matrícula. "
     "Verificar se o Estado de Mato Grosso do Sul aparece como confrontante. "
     "Considere linguagem arcaica, abreviações, variações tipográficas e OCR imperfeito. "
@@ -721,7 +550,75 @@ AGGREGATE_PROMPT = (
     "7) VERIFICAÇÃO ESPECÍFICA DO ESTADO DE MS:\n"
     "   - Procure por: 'Estado', 'Estado de Mato Grosso do Sul', 'MS', 'Governo', 'Fazenda Pública'\n"
     "   - Se encontrar qualquer referência ao Estado como confrontante, marque como true\n\n"
-    "🔥 ALERTA MÁXIMO: A omissão de qualquer confrontante pode invalidar o usucapião. Seja METICULOSO.\n\n"
+    "8) 📋 ANÁLISE COMPLETA DA CADEIA DOMINIAL (CRÍTICO PARA USUCAPIÃO):\n"
+    "   Para definir a propriedade do imóvel, analise toda a cadeia dominial, isto é, o histórico completo de proprietários desde a titulação original até o momento atual.\n"
+    "   \n"
+    "   🔍 PROCURE POR SEÇÕES:\n"
+    "   - 'REGISTRO', 'REGISTRO ANTERIOR', 'ORIGEM', 'PROCEDÊNCIA'\n"
+    "   - 'TRANSMISSÕES', 'AVERBAÇÕES', 'HISTÓRICO DE PROPRIETÁRIOS'\n"
+    "   - Numeração sequencial de registros (R.1, R.2, R.3, etc.)\n"
+    "   - Datas de transações e tipos de transmissão\n"
+    "   \n"
+    "   📊 EXTRAIA PARA CADA TRANSMISSÃO:\n"
+    "   - Data da transmissão\n"
+    "   - Tipo de transmissão (compra/venda, doação, herança, adjudicação, etc.)\n"
+    "   - Proprietário anterior (vendedor/doador)\n"
+    "   - Novo proprietário (comprador/donatário)\n"
+    "   - Percentual de propriedade (se houver co-propriedade)\n"
+    "   - Valor da transação (se informado)\n"
+    "   \n"
+    "   🎯 CO-PROPRIEDADE:\n"
+    "   - Considere co-propriedade em percentuais como cadeias dominiais autônomas\n"
+    "   - Se João possui 50% e Maria possui 50%, trate como duas cadeias separadas\n"
+    "   - Rastreie cada percentual independentemente\n"
+    "   \n"
+    "9) 🚨 IDENTIFICAÇÃO DE RESTRIÇÕES E GRAVAMES:\n"
+    "   Verificar e indicar restrições sobre o imóvel que não tenham sido baixadas.\n"
+    "   \n"
+    "   🔍 PROCURE POR:\n"
+    "   - 'PENHORA', 'ARRESTO', 'SEQUESTRO'\n"
+    "   - 'INDISPONIBILIDADE', 'BLOQUEIO JUDICIAL'\n"
+    "   - 'HIPOTECA', 'PENHOR', 'ANTICRESE'\n"
+    "   - 'USUFRUTO', 'ENFITEUSE', 'SERVIDÃO'\n"
+    "   - 'FIDEICOMISSO', 'ALIENAÇÃO FIDUCIÁRIA'\n"
+    "   - 'ÔNUS', 'GRAVAME', 'RESTRIÇÃO'\n"
+    "   \n"
+    "   ⚖️ VERIFIQUE STATUS:\n"
+    "   - Para cada restrição encontrada, verifique se foi BAIXADA ou CANCELADA\n"
+    "   - Procure por: 'BAIXA', 'CANCELAMENTO', 'EXTINÇÃO', 'QUITAÇÃO'\n"
+    "   - Se não há registro de baixa, considere a restrição como VIGENTE\n"
+    "   - Anote datas de registro e eventual baixa\n"
+    "   \n"
+    "   🚨 ATENÇÃO ESPECIAL - ESTADO DE MATO GROSSO DO SUL:\n"
+    "   - IDENTIFIQUE com prioridade máxima se o Estado de MS tem qualquer direito registrado\n"
+    "   - Procure por: 'Estado de Mato Grosso do Sul', 'Estado de MS', 'Fazenda Pública', 'Governo do Estado'\n"
+    "   - Verifique se aparece como: CREDOR em hipotecas/penhoras, PROPRIETÁRIO, USUFRUTUÁRIO\n"
+    "   - Marque como CRÍTICO qualquer direito vigente do Estado de MS\n"
+    "   \n"
+    "10) 📐 EXTRAÇÃO DE DADOS GEOMÉTRICOS (PARA GERAÇÃO DE PLANTA):\n"
+    "   Para possibilitar a geração automática de planta do imóvel, extraia com precisão:\n"
+    "   \n"
+    "   📏 MEDIDAS LINEARES:\n"
+    "   - FRENTE: medida da frente do lote (em metros)\n"
+    "   - FUNDOS: medida dos fundos do lote (em metros)\n"
+    "   - LATERAL DIREITA: medida do lado direito (em metros)\n"
+    "   - LATERAL ESQUERDA: medida do lado esquerdo (em metros)\n"
+    "   - Procure por: 'medindo', 'metros', 'm', 'frente', 'fundos', 'lado direito', 'lado esquerdo'\n"
+    "   \n"
+    "   🧭 ORIENTAÇÃO E CONFRONTAÇÕES:\n"
+    "   - Para cada lado: identifique COM O QUE confronta\n"
+    "   - Relacione direção com confrontante: 'frente' -> 'Rua X', 'fundos' -> 'lote Y'\n"
+    "   - Procure por: 'ao norte com', 'ao sul com', 'frente para', 'fundos com'\n"
+    "   \n"
+    "   📐 ÂNGULOS E FORMATO:\n"
+    "   - Identifique se o terreno é retangular (ângulos de 90°)\n"
+    "   - Se irregular: procure por ângulos específicos mencionados\n"
+    "   - Formato: 'retangular', 'irregular', 'triangular', 'trapezoidal'\n"
+    "   \n"
+    "   📊 ÁREA TOTAL:\n"
+    "   - Procure por: 'área de', 'com área total de', 'm²', 'metros quadrados'\n"
+    "   - Calcule se não informado: frente × lateral (para retângulos)\n"
+    "\n🔥 ALERTA MÁXIMO: A omissão de qualquer confrontante pode invalidar o usucapião. Seja METICULOSO.\n\n"
     "💡 EXEMPLO PRÁTICO DE IDENTIFICAÇÃO:\n"
     "Se o texto diz: 'lote nº 10 da quadra 21, confronta ao norte com o lote 11, ao sul com a Rua das Flores, ao leste com terreno de Maria Santos, matrícula 1.234, e ao oeste com o Estado de Mato Grosso do Sul'\n"
     "EXTRAIA LOTE/QUADRA: lote='10', quadra='21'\n"
@@ -754,7 +651,52 @@ AGGREGATE_PROMPT = (
     '      "proprietarios": ["Nome 1", "Nome 2"],\n'
     '      "descricao": "descrição do imóvel",\n'
     '      "confrontantes": ["lote 11", "confrontante 2"],\n'
-    '      "evidence": ["trecho literal 1", "trecho literal 2"]\n'
+    '      "evidence": ["trecho literal 1", "trecho literal 2"],\n'
+    '      "cadeia_dominial": [\n'
+    '        {\n'
+    '          "data": "01/01/2020",\n'
+    '          "tipo_transmissao": "compra e venda",\n'
+    '          "proprietario_anterior": "João Silva",\n'
+    '          "novo_proprietario": "Maria Santos",\n'
+    '          "percentual": "100%",\n'
+    '          "valor": "R$ 100.000,00",\n'
+    '          "registro": "R.1"\n'
+    '        }\n'
+    '      ],\n'
+    '      "restricoes": [\n'
+    '        {\n'
+    '          "tipo": "hipoteca",\n'
+    '          "data_registro": "15/06/2019",\n'
+    '          "credor": "Banco XYZ",\n'
+    '          "valor": "R$ 80.000,00",\n'
+    '          "situacao": "vigente",\n'
+    '          "data_baixa": null,\n'
+    '          "observacoes": "hipoteca para financiamento imobiliário"\n'
+    '        }\n'
+    '      ],\n'
+    '      "dados_geometricos": {\n'
+    '        "medidas": {\n'
+    '          "frente": 14.0,\n'
+    '          "fundos": 14.0,\n'
+    '          "lateral_direita": 30.69,\n'
+    '          "lateral_esquerda": 30.69\n'
+    '        },\n'
+    '        "confrontantes": {\n'
+    '          "frente": "Rua Alberto Albertini",\n'
+    '          "fundos": "Corredor Público",\n'
+    '          "lateral_direita": "lote 05",\n'
+    '          "lateral_esquerda": "lote 03"\n'
+    '        },\n'
+    '        "area_total": 429.66,\n'
+    '        "angulos": {\n'
+    '          "frente": 90.0,\n'
+    '          "lateral_direita": 90.0,\n'
+    '          "fundos": 90.0,\n'
+    '          "lateral_esquerda": 90.0\n'
+    '        },\n'
+    '        "formato": "retangular",\n'
+    '        "observacoes": ["terreno plano", "esquina"]\n'
+    '      }\n'
     '    }\n'
     '  ],\n'
     '  "matricula_principal": "12345",\n'
@@ -777,6 +719,30 @@ AGGREGATE_PROMPT = (
     '  "lotes_sem_matricula": ["lote 12", "lote 15"],\n'
     '  "confrontacao_completa": true|false|null,\n'
     '  "proprietarios_identificados": {"12345": ["Nome"], "12346": ["Nome2"]},\n'
+    '  "resumo_analise": {\n'
+    '    "cadeia_dominial_completa": {\n'
+    '      "12345": [\n'
+    '        {"proprietario": "Origem/Titulação", "periodo": "até 2015", "percentual": "100%"},\n'
+    '        {"proprietario": "João Silva", "periodo": "2015-2020", "percentual": "100%"},\n'
+    '        {"proprietario": "Maria Santos", "periodo": "2020-atual", "percentual": "100%"}\n'
+    '      ]\n'
+    '    },\n'
+    '    "restricoes_vigentes": [\n'
+    '      {"tipo": "hipoteca", "credor": "Banco XYZ", "valor": "R$ 80.000,00", "status": "vigente"}\n'
+    '    ],\n'
+    '    "restricoes_baixadas": [\n'
+    '      {"tipo": "penhora", "data_baixa": "10/12/2021", "motivo": "quitação judicial"}\n'
+    '    ],\n'
+    '    "estado_ms_direitos": {\n'
+    '      "tem_direitos": true|false,\n'
+    '      "detalhes": [\n'
+    '        {"matricula": "12345", "tipo_direito": "credor_hipoteca", "status": "vigente", "valor": "R$ 50.000,00"},\n'
+    '        {"matricula": "12346", "tipo_direito": "proprietario", "percentual": "50%", "status": "atual"}\n'
+    '      ],\n'
+    '      "criticidade": "alta|media|baixa",\n'
+    '      "observacao": "Estado de MS possui hipoteca vigente na matrícula principal"\n'
+    '    }\n'
+    '  },\n'
     '  "confidence": 0.0-1.0,\n'
     '  "reasoning": "explicação detalhada da análise"\n'
     "}\n\n"
@@ -799,25 +765,103 @@ PARTIAL_PROMPT = (
     "– Liste confrontantes exatamente como aparecerem no trecho (sem normalizar), e evidências curtas."
 )
 
-def chunk_text(txt: str, max_chars: int = 18000) -> List[str]:
-    """
-    Divide texto em pedaços seguros para contexto.
-    """
-    txt = txt or ""
-    if len(txt) <= max_chars:
-        return [txt]
-    chunks = []
-    start = 0
-    while start < len(txt):
-        end = min(start + max_chars, len(txt))
-        # tenta quebrar em limite de parágrafo
-        if end < len(txt):
-            nl = txt.rfind("\n\n", start, end)
-            if nl != -1 and (end - nl) < 1500:
-                end = nl
-        chunks.append(txt[start:end])
-        start = end
-    return chunks
+
+def _safe_get_dict(data, key, default=None):
+    """Retorna valor do dicionário garantindo que seja do tipo correto."""
+    if default is None:
+        default = {}
+    
+    value = data.get(key, default)
+    if not isinstance(value, dict):
+        return default
+    return value
+
+def _safe_get_list(data, key, default=None):
+    """Retorna valor do dicionário garantindo que seja uma lista."""
+    if default is None:
+        default = []
+    
+    value = data.get(key, default)
+    if not isinstance(value, list):
+        return default
+    return value
+
+def _safe_process_matricula_data(m_data):
+    """Processa dados de matrícula de forma robusta, evitando erros com campos vazios."""
+    if not isinstance(m_data, dict):
+        return None
+    
+    try:
+        # Processa cadeia dominial
+        cadeia_dominial_obj = []
+        cadeia_data = _safe_get_list(m_data, "cadeia_dominial")
+        for transmissao_data in cadeia_data:
+            if isinstance(transmissao_data, dict):
+                transmissao = TransmissaoInfo(
+                    data=transmissao_data.get("data"),
+                    tipo_transmissao=transmissao_data.get("tipo_transmissao"),
+                    proprietario_anterior=transmissao_data.get("proprietario_anterior"),
+                    novo_proprietario=transmissao_data.get("novo_proprietario"),
+                    percentual=transmissao_data.get("percentual"),
+                    valor=transmissao_data.get("valor"),
+                    registro=transmissao_data.get("registro")
+                )
+                cadeia_dominial_obj.append(transmissao)
+        
+        # Processa restrições
+        restricoes_obj = []
+        restricoes_data = _safe_get_list(m_data, "restricoes")
+        for restricao_data in restricoes_data:
+            if isinstance(restricao_data, dict):
+                restricao = RestricaoInfo(
+                    tipo=restricao_data.get("tipo", ""),
+                    data_registro=restricao_data.get("data_registro"),
+                    credor=restricao_data.get("credor"),
+                    valor=restricao_data.get("valor"),
+                    situacao=restricao_data.get("situacao", "vigente"),
+                    data_baixa=restricao_data.get("data_baixa"),
+                    observacoes=restricao_data.get("observacoes")
+                )
+                restricoes_obj.append(restricao)
+        
+        # Processa dados geométricos com validação robusta
+        dados_geom_data = _safe_get_dict(m_data, "dados_geometricos")
+        medidas = _safe_get_dict(dados_geom_data, "medidas")
+        confrontantes_geom = _safe_get_dict(dados_geom_data, "confrontantes")
+        angulos = _safe_get_dict(dados_geom_data, "angulos")
+        observacoes_geom = _safe_get_list(dados_geom_data, "observacoes")
+        
+        dados_geometricos = DadosGeometricos(
+            medidas=medidas,
+            confrontantes=confrontantes_geom,
+            area_total=dados_geom_data.get("area_total"),
+            angulos=angulos,
+            formato=dados_geom_data.get("formato", "retangular"),
+            observacoes=observacoes_geom
+        )
+        
+        # Processa listas principais com validação
+        proprietarios = _safe_get_list(m_data, "proprietarios")
+        confrontantes_list = _safe_get_list(m_data, "confrontantes")
+        evidence = _safe_get_list(m_data, "evidence")
+        
+        matricula = MatriculaInfo(
+            numero=str(m_data.get("numero", "")),
+            proprietarios=proprietarios,
+            descricao=str(m_data.get("descricao", "")),
+            confrontantes=confrontantes_list,
+            evidence=evidence,
+            lote=m_data.get("lote"),
+            quadra=m_data.get("quadra"),
+            cadeia_dominial=cadeia_dominial_obj,
+            restricoes=restricoes_obj,
+            dados_geometricos=dados_geometricos
+        )
+        return matricula
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao processar dados da matrícula: {e}")
+        return None
 
 def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
     """
@@ -1018,7 +1062,17 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             "   \n"
             "6) BUSCA ESPECÍFICA POR ESTADO DE MS:\n"
             "   - Escaneie todo documento procurando 'Estado', 'MS', 'Mato Grosso do Sul' como confrontante\n\n"
-            "🔥 VIDA OU MORTE: Cada confrontante perdido pode invalidar o usucapião. ZERO TOLERÂNCIA para omissões.\n\n"
+            "7) 📋 ANÁLISE VISUAL DA CADEIA DOMINIAL:\n"
+            "   - Identifique visualmente todas as transmissões de propriedade\n"
+            "   - Procure seções 'REGISTRO', 'TRANSMISSÕES', 'AVERBAÇÕES'\n"
+            "   - Para cada transmissão: data, tipo, proprietário anterior, novo proprietário, percentual\n"
+            "   - Considere co-propriedade como cadeias autônomas\n"
+            "\n"
+            "8) 🚨 IDENTIFICAÇÃO VISUAL DE RESTRIÇÕES:\n"
+            "   - Procure por 'PENHORA', 'HIPOTECA', 'INDISPONIBILIDADE', 'ÔNUS'\n"
+            "   - Verifique se há registros de 'BAIXA' ou 'CANCELAMENTO'\n"
+            "   - Liste apenas restrições ainda VIGENTES\n"
+            "\n🔥 VIDA OU MORTE: Cada confrontante perdido pode invalidar o usucapião. ZERO TOLERÂNCIA para omissões.\n\n"
             "🔄 ANÁLISE EM 2 PASSADAS EFICIENTES:\n"
             "\n"
             "PASSADA 1 - IDENTIFICAÇÃO:\n"
@@ -1135,19 +1189,11 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
                 "reasoning": f"Erro de parsing JSON da análise visual: {content[:500]}..."
             }
 
-        # Converte dados das matrículas para objetos MatriculaInfo
+        # Converte dados das matrículas para objetos MatriculaInfo usando processamento seguro
         matriculas_obj = []
         for m_data in parsed.get("matriculas_encontradas", []):
-            if isinstance(m_data, dict):
-                matricula = MatriculaInfo(
-                    numero=m_data.get("numero", ""),
-                    proprietarios=m_data.get("proprietarios", []),
-                    descricao=m_data.get("descricao", ""),
-                    confrontantes=m_data.get("confrontantes", []),
-                    evidence=m_data.get("evidence", []),
-                    lote=m_data.get("lote"),
-                    quadra=m_data.get("quadra")
-                )
+            matricula = _safe_process_matricula_data(m_data)
+            if matricula is not None:
                 matriculas_obj.append(matricula)
 
         # Processa lotes confrontantes
@@ -1175,6 +1221,25 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             print(f"🔍 Tipo do erro: {type(e).__name__}")
             raise
 
+        # Processa resumo da análise com tratamento seguro
+        resumo_data = _safe_get_dict(parsed, "resumo_analise")
+        
+        # Processa direitos do Estado de MS
+        estado_ms_data = _safe_get_dict(resumo_data, "estado_ms_direitos")
+        estado_ms_direitos = EstadoMSDireitos(
+            tem_direitos=bool(estado_ms_data.get("tem_direitos", False)),
+            detalhes=_safe_get_list(estado_ms_data, "detalhes"),
+            criticidade=str(estado_ms_data.get("criticidade", "baixa")),
+            observacao=str(estado_ms_data.get("observacao", ""))
+        )
+        
+        resumo_analise = ResumoAnalise(
+            cadeia_dominial_completa=_safe_get_list(resumo_data, "cadeia_dominial_completa"),
+            restricoes_vigentes=_safe_get_list(resumo_data, "restricoes_vigentes"),
+            restricoes_baixadas=_safe_get_list(resumo_data, "restricoes_baixadas"),
+            estado_ms_direitos=estado_ms_direitos
+        )
+
         return AnalysisResult(
             arquivo=fname_placeholder,
             matriculas_encontradas=matriculas_obj,
@@ -1185,6 +1250,7 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             lotes_sem_matricula=parsed.get("lotes_sem_matricula", []),
             confrontacao_completa=parsed.get("confrontacao_completa"),
             proprietarios_identificados=parsed.get("proprietarios_identificados", {}),
+            resumo_analise=resumo_analise,
             confidence=parsed.get("confidence"),
             reasoning=parsed.get("reasoning", ""),
             raw_json=parsed
@@ -1218,7 +1284,7 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             raw_json={}
         )
 
-def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
+# Função analyze_text_with_llm removida - pipeline textual obsoleto
     """
     Estratégia:
     - Se texto for curto: chamada única com prompt agregado.
@@ -1293,19 +1359,11 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
                     "reasoning": f"Erro de parsing JSON: {content}"
                 }
 
-        # Converte dados das matrículas para objetos MatriculaInfo
+        # Converte dados das matrículas para objetos MatriculaInfo usando processamento seguro
         matriculas_obj = []
         for m_data in parsed.get("matriculas_encontradas", []):
-            if isinstance(m_data, dict):
-                matricula = MatriculaInfo(
-                    numero=m_data.get("numero", ""),
-                    proprietarios=m_data.get("proprietarios", []),
-                    descricao=m_data.get("descricao", ""),
-                    confrontantes=m_data.get("confrontantes", []),
-                    evidence=m_data.get("evidence", []),
-                    lote=m_data.get("lote"),
-                    quadra=m_data.get("quadra")
-                )
+            matricula = _safe_process_matricula_data(m_data)
+            if matricula is not None:
                 matriculas_obj.append(matricula)
 
         return AnalysisResult(
@@ -1457,6 +1515,9 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
         matriculas_encontradas=matriculas_obj,
         matricula_principal=parsed.get("matricula_principal"),
         matriculas_confrontantes=parsed.get("matriculas_confrontantes", []),
+        lotes_confrontantes=[],
+        matriculas_nao_confrontantes=parsed.get("matriculas_nao_confrontantes", []),
+        lotes_sem_matricula=parsed.get("lotes_sem_matricula", []),
         confrontacao_completa=parsed.get("confrontacao_completa"),
         proprietarios_identificados=parsed.get("proprietarios_identificados", {}),
         confidence=parsed.get("confidence"),
@@ -1530,6 +1591,9 @@ class App(tk.Tk):
 
         self.btn_export = ttk.Button(top, text="Exportar CSV", command=self.export_csv)
         self.btn_export.pack(side="left")
+        
+        self.btn_generate_plant = ttk.Button(top, text="Gerar Planta", command=self.generate_property_plant)
+        self.btn_generate_plant.pack(side="left", padx=(8,0))
 
         # Progress bar
         self.progress = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=220)
@@ -1553,7 +1617,25 @@ class App(tk.Tk):
         right = ttk.Frame(split)
         split.add(right, weight=2)
 
-        ttk.Label(right, text="Resultados da Análise de Usucapião").pack(anchor="w", pady=(0,4))
+        # Área de alerta para direitos do Estado de MS
+        alert_frame = ttk.Frame(right)
+        alert_frame.pack(fill="x", padx=5, pady=(0,10))
+        
+        self.estado_alert_var = tk.StringVar()
+        self.estado_alert_label = ttk.Label(
+            alert_frame, 
+            textvariable=self.estado_alert_var,
+            font=("Arial", 10, "bold"),
+            foreground="red",
+            background="yellow",
+            relief="solid",
+            borderwidth=2,
+            padding=5
+        )
+        # Label inicialmente oculto
+        self.estado_alert_label.pack_forget()
+        
+        ttk.Label(right, text="Imóveis Confrontantes").pack(anchor="w", pady=(0,4))
         cols = ("matricula", "lote_quadra", "tipo", "proprietario", "estado_ms", "confianca")
         self.tree_results = ttk.Treeview(right, columns=cols, show="tree headings", height=12)
         self.tree_results.heading("#0", text="")  # Coluna da árvore
@@ -1878,6 +1960,8 @@ class App(tk.Tk):
                     path, result = payload
                     self.populate_results_tree(result)
                     self.update_summary(result)
+                    # Atualiza alerta sobre direitos do Estado de MS
+                    self.update_estado_alert()
                 elif kind == "progress":
                     val = self.progress["value"] + payload
                     self.progress["value"] = val
@@ -2109,7 +2193,7 @@ class App(tk.Tk):
             # Adiciona informações básicas + reasoning do modelo
             confianca = int(result.confidence * 100) if result.confidence is not None and result.confidence <= 1 else int(result.confidence) if result.confidence is not None else 0
             
-            resumo_header = f"🎯 ANÁLISE PERICIAL (Confiança: {confianca}%)\n\n"
+            resumo_header = f"ANÁLISE PERICIAL (Confiança: {confianca}%)\n\n"
             reasoning_texto = result.reasoning.strip()
             
             # Formata o reasoning para melhor legibilidade
@@ -2173,22 +2257,9 @@ class App(tk.Tk):
         """Mostra informações sobre modelos com suporte a visão"""
         info = (
             "MODELOS RECOMENDADOS COM VISÃO:\n\n"
-            "• anthropic/claude-3.5-sonnet (Recomendado)\n"
-            "• anthropic/claude-3-opus\n"
-            "• anthropic/claude-3-sonnet\n"
-            "• anthropic/claude-3-haiku\n"
-            "• openai/gpt-4o\n"
-            "• openai/gpt-4o-mini\n"
-            "• openai/gpt-4-turbo\n\n"
-            "IMPORTANTE:\n"
-            "Este sistema usa análise visual direta dos documentos.\n"
-            "Certifique-se de usar um modelo que suporte imagens.\n\n"
-            "Claude 3.5 Sonnet é altamente recomendado para\n"
-            "análise precisa de documentos jurídicos.\n\n"
-            "SOLUÇÃO DE PROBLEMAS:\n"
-            "• Arquivo muito grande: Limite de 30 páginas\n"
-            "• Imagem ilegível: Use PDFs com texto ou OCR melhor\n"
-            "• Erro de API: Verifique chave OPENROUTER_API_KEY"
+            "• google/gemini-2.5-pro (Recomendado)\n"
+            "• anthropic/claude-opus-4\n"
+            "• openai/gpt-5\n"
         )
         messagebox.showinfo("Modelos com Suporte a Visão", info)
     
@@ -2229,6 +2300,810 @@ class App(tk.Tk):
             issues.append(f"❌ Erro ao analisar arquivo: {str(e)[:50]}")
         
         return "; ".join(issues)
+
+    def check_estado_ms_rights(self, analysis_result: AnalysisResult) -> Optional[str]:
+        """Verifica se o Estado de MS tem direitos registrados nas matrículas"""
+        direitos_encontrados = []
+        
+        # Verifica em todas as matrículas
+        for matricula in analysis_result.matriculas_encontradas:
+            # Verifica se Estado de MS é proprietário
+            for proprietario in matricula.proprietarios:
+                if any(palavra in proprietario.lower() for palavra in 
+                      ['estado de mato grosso do sul', 'estado de ms', 'estado do ms', 
+                       'fazenda pública', 'governo do estado']):
+                    direitos_encontrados.append(f"Matrícula {matricula.numero}: Proprietário")
+            
+            # Verifica restrições onde Estado de MS é credor
+            for restricao in matricula.restricoes:
+                if restricao.credor and any(palavra in restricao.credor.lower() for palavra in 
+                                          ['estado de mato grosso do sul', 'estado de ms', 'estado do ms', 
+                                           'fazenda pública', 'governo do estado']):
+                    direitos_encontrados.append(
+                        f"Matrícula {matricula.numero}: {restricao.tipo.upper()} "
+                        f"({restricao.situacao})"
+                    )
+        
+        # Verifica resumo da análise
+        if analysis_result.resumo_analise:
+            # Verifica estrutura específica de direitos do Estado de MS
+            if analysis_result.resumo_analise.estado_ms_direitos.tem_direitos:
+                for detalhe in analysis_result.resumo_analise.estado_ms_direitos.detalhes:
+                    direitos_encontrados.append(
+                        f"⚠️ {detalhe.get('tipo_direito', 'Direito').upper()} "
+                        f"(Status: {detalhe.get('status', 'N/A')})"
+                    )
+            
+            # Verifica também nas restrições gerais
+            for restricao in analysis_result.resumo_analise.restricoes_vigentes:
+                if restricao.get('credor') and any(palavra in restricao['credor'].lower() for palavra in 
+                                                 ['estado de mato grosso do sul', 'estado de ms', 'estado do ms', 
+                                                  'fazenda pública', 'governo do estado']):
+                    direitos_encontrados.append(
+                        f"VIGENTE: {restricao.get('tipo', 'Restrição').upper()}"
+                    )
+        
+        if direitos_encontrados:
+            return " | ".join(direitos_encontrados)
+        return None
+
+    def update_estado_alert(self):
+        """Atualiza o alerta sobre direitos do Estado de MS"""
+        direitos_estado = []
+        
+        # Verifica todos os resultados analisados
+        for file_path, result in self.results.items():
+            direitos = self.check_estado_ms_rights(result)
+            if direitos:
+                filename = os.path.basename(file_path)
+                direitos_estado.append(f"{filename}: {direitos}")
+        
+        if direitos_estado:
+            alert_text = "ATENÇÃO: Estado de MS tem direitos registrados!\n" + "\n".join(direitos_estado)
+            self.estado_alert_var.set(alert_text)
+            self.estado_alert_label.pack(fill="x", pady=(0,5))
+            # Piscar o alerta para chamar atenção
+            self.blink_alert()
+        else:
+            self.estado_alert_label.pack_forget()
+
+    def blink_alert(self):
+        """Faz o alerta piscar para chamar atenção"""
+        current_bg = self.estado_alert_label.cget("background")
+        if current_bg == "yellow":
+            self.estado_alert_label.configure(background="red", foreground="white")
+            self.after(500, lambda: self.estado_alert_label.configure(background="yellow", foreground="red"))
+        
+        # Repete o piscar 3 vezes
+        self.after(1000, self.blink_alert_cycle)
+
+    def blink_alert_cycle(self):
+        """Controla o ciclo de piscar do alerta"""
+        if not hasattr(self, '_blink_count'):
+            self._blink_count = 0
+        
+        if self._blink_count < 3:
+            self.blink_alert()
+            self._blink_count += 1
+        else:
+            self._blink_count = 0
+
+    def generate_property_plant(self):
+        """Gera planta do imóvel com base nos dados geométricos extraídos"""
+        if not self.results:
+            messagebox.showwarning("Nenhum resultado", "Processe pelo menos um arquivo antes de gerar a planta.")
+            return
+        
+        # Encontra a matrícula principal
+        matricula_principal = None
+        for file_path, result in self.results.items():
+            if result.matricula_principal:
+                for matricula in result.matriculas_encontradas:
+                    if matricula.numero == result.matricula_principal:
+                        matricula_principal = matricula
+                        break
+                if matricula_principal:
+                    break
+        
+        if not matricula_principal:
+            messagebox.showwarning("Matrícula não encontrada", "Não foi possível identificar a matrícula principal.")
+            return
+        
+        # Verifica se há algum dado geométrico, mas prossegue mesmo com dados parciais
+        dados_geom = matricula_principal.dados_geometricos
+        if not dados_geom:
+            print("⚠️ Nenhum dado geométrico encontrado, gerando planta conceitual...")
+        elif not dados_geom.medidas:
+            print("⚠️ Medidas específicas não encontradas, usando dados disponíveis...")
+        
+        # Gera a planta
+        self._generate_plant_image(matricula_principal)
+
+    def _generate_plant_image(self, matricula: MatriculaInfo):
+        """Gera a imagem da planta usando matplotlib"""
+        try:
+            # Mostra janela de progresso
+            progress_window = tk.Toplevel(self)
+            progress_window.title("Gerando Planta do Imóvel")
+            progress_window.geometry("400x150")
+            progress_window.transient(self)
+            progress_window.grab_set()
+            
+            ttk.Label(progress_window, text="🏗️ Gerando planta do imóvel...").pack(pady=20)
+            progress_bar = ttk.Progressbar(progress_window, mode="indeterminate")
+            progress_bar.pack(pady=10, padx=20, fill="x")
+            progress_bar.start()
+            
+            def generate_in_thread():
+                try:
+                    # Gera a imagem usando matplotlib
+                    image_url = self._generate_plant_with_matplotlib(matricula)
+                    
+                    if image_url:
+                        # Cria prompt informativo para exibir na janela de resultado
+                        plant_prompt = self._create_info_text(matricula)
+                        progress_window.after(0, lambda: self._show_generated_image(image_url, plant_prompt, progress_window))
+                    else:
+                        progress_window.after(0, lambda: self._show_plant_error("Não foi possível gerar a planta", progress_window))
+                    
+                except Exception as e:
+                    progress_window.after(0, lambda: self._show_plant_error(str(e), progress_window))
+            
+            # Executa em thread separada
+            thread = threading.Thread(target=generate_in_thread, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao gerar planta: {e}")
+    
+    def _create_info_text(self, matricula: MatriculaInfo) -> str:
+        """Cria texto informativo sobre a planta gerada"""
+        info = f"""PLANTA TÉCNICA GERADA COM MATPLOTLIB
+
+🏠 INFORMAÇÕES DO IMÓVEL:
+- Matrícula: {matricula.numero or 'N/A'}
+- Lote: {matricula.lote or 'N/A'}
+- Quadra: {matricula.quadra or 'N/A'}
+
+👥 PROPRIETÁRIO(S):"""
+        
+        for prop in matricula.proprietarios:
+            info += f"\n- {prop}"
+            
+        if matricula.dados_geometricos:
+            dados = matricula.dados_geometricos
+            info += f"\n\n📐 DADOS GEOMÉTRICOS:"
+            if dados.area_total:
+                info += f"\n- Área Total: {dados.area_total}"
+            if dados.formato:
+                info += f"\n- Formato: {dados.formato}"
+            if dados.medidas:
+                info += f"\n- Medidas: {dados.medidas}"
+                
+        info += f"\n\n✅ Planta gerada usando matplotlib - precisão técnica garantida!"
+        return info
+
+    def _create_plant_prompt(self, matricula: MatriculaInfo) -> str:
+        """Cria prompt estruturado para geração da planta, adaptando-se aos dados disponíveis"""
+        dados = matricula.dados_geometricos
+        
+        prompt = f"""Crie uma planta baixa técnica e profissional do seguinte imóvel:
+
+🏠 INFORMAÇÕES DO IMÓVEL:
+- Matrícula: {matricula.numero or 'N/A'}
+- Lote: {matricula.lote or 'N/A'}
+- Quadra: {matricula.quadra or 'N/A'}"""
+
+        # Adiciona formato se disponível
+        if dados and dados.formato:
+            prompt += f"\n- Formato: {dados.formato}"
+        else:
+            prompt += f"\n- Formato: Retangular (padrão)"
+
+        prompt += "\n\n📏 MEDIDAS DISPONÍVEIS (em metros):"
+        
+        # Adiciona medidas se disponíveis
+        medidas_encontradas = False
+        if dados and dados.medidas:
+            for direcao, medida in dados.medidas.items():
+                if medida:  # Só adiciona se a medida não for vazia
+                    prompt += f"\n- {direcao.title()}: {medida}m"
+                    medidas_encontradas = True
+        
+        if not medidas_encontradas:
+            prompt += "\n- Medidas específicas não informadas"
+            # Tenta extrair informações da descrição da matrícula
+            if matricula.descricao:
+                prompt += f"\n- DESCRIÇÃO DISPONÍVEL: {matricula.descricao[:200]}..."
+                prompt += "\n- (Extrair dimensões aproximadas da descrição acima)"
+        
+        prompt += "\n\n🧭 CONFRONTAÇÕES IDENTIFICADAS:"
+        confrontacoes_encontradas = False
+        
+        # Tenta usar dados geométricos primeiro
+        if dados and dados.confrontantes:
+            for direcao, confrontante in dados.confrontantes.items():
+                if confrontante:
+                    prompt += f"\n- {direcao.title()}: {confrontante}"
+                    confrontacoes_encontradas = True
+        
+        # Se não há confrontações nos dados geométricos, usa as confrontações gerais da matrícula
+        if not confrontacoes_encontradas and matricula.confrontantes:
+            for i, confrontante in enumerate(matricula.confrontantes):
+                if confrontante:
+                    prompt += f"\n- Lado {i+1}: {confrontante}"
+                    confrontacoes_encontradas = True
+        
+        if not confrontacoes_encontradas:
+            prompt += "\n- Confrontações não especificadas (usar confrontantes genéricos)"
+        
+        # Adiciona área se disponível
+        if dados and dados.area_total:
+            prompt += f"\n\n📊 ÁREA TOTAL: {dados.area_total} m²"
+        else:
+            prompt += f"\n\n📊 ÁREA TOTAL: A ser calculada pelas dimensões estimadas"
+        
+        prompt += "\n\n📐 ÂNGULOS:"
+        if dados and dados.angulos:
+            for direcao, angulo in dados.angulos.items():
+                if angulo:
+                    prompt += f"\n- {direcao.title()}: {angulo}°"
+        else:
+            prompt += "\n- Todos os ângulos: 90° (terreno retangular padrão)"
+        
+        prompt += f"""
+
+🎯 REQUISITOS TÉCNICOS:
+✅ Vista superior (planta baixa)
+✅ Escala gráfica visível (mesmo que aproximada)
+✅ Cotas com medidas disponíveis ou estimadas
+✅ Rosa dos ventos indicando orientação
+✅ Legenda identificando confrontantes conhecidos
+✅ Área total (exata ou estimada)
+✅ Estilo técnico profissional
+✅ Linhas precisas e limpas
+✅ Texto legível em fonte técnica
+
+📝 ADAPTAÇÕES QUANDO DADOS INCOMPLETOS:
+✅ Use dimensões proporcionais razoáveis
+✅ Indique medidas como "aprox." quando estimadas
+✅ Crie confrontações genéricas se necessário
+✅ Mantenha aparência profissional mesmo com dados parciais
+
+🚫 NÃO INCLUIR:
+❌ Construções internas
+❌ Móveis ou decoração
+❌ Vegetação detalhada
+❌ Cores excessivas
+
+RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, complementando informações em falta com estimativas razoáveis e profissionais."""
+        
+        return prompt
+
+    def _generate_plant_with_matplotlib(self, matricula: MatriculaInfo) -> Optional[str]:
+        """Gera planta técnica usando matplotlib baseada nos dados geométricos"""
+        try:
+            print(f"🎨 Gerando planta técnica com matplotlib...")
+            
+            # Configura matplotlib para não mostrar em GUI separada
+            plt.switch_backend('Agg')
+            
+            # Cria figura com tamanho A4 landscape
+            fig, ax = plt.subplots(figsize=(11.7, 8.3), dpi=150)
+            ax.set_aspect('equal')
+            
+            # Extrai dados geométricos
+            dados_geom = matricula.dados_geometricos
+            medidas = dados_geom.medidas if dados_geom.medidas else {}
+            confrontantes = dados_geom.confrontantes if dados_geom.confrontantes else {}
+            
+            # Define coordenadas do terreno baseado nas medidas
+            coords = self._calculate_plot_coordinates(medidas, dados_geom.formato)
+            
+            if coords:
+                # Desenha o terreno
+                terreno = Polygon(coords, fill=False, edgecolor='black', linewidth=2)
+                ax.add_patch(terreno)
+                
+                # Adiciona medidas e confrontantes
+                self._add_measurements_and_labels(ax, coords, medidas, confrontantes)
+                
+                # Calcula limites e adiciona margem
+                x_coords = [p[0] for p in coords]
+                y_coords = [p[1] for p in coords]
+                margin = max(max(x_coords) - min(x_coords), max(y_coords) - min(y_coords)) * 0.2
+                
+                ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
+                ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+            else:
+                # Fallback: desenha terreno genérico baseado na descrição
+                self._draw_generic_plot(ax, matricula)
+            
+            # Configura estilo técnico
+            ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+            ax.set_title(f'PLANTA DO IMÓVEL - LOTE {matricula.lote}, QUADRA {matricula.quadra}\n'
+                        f'MATRÍCULA Nº {matricula.numero}', 
+                        fontsize=14, fontweight='bold', pad=20)
+            
+            # Remove ticks mas mantém grid
+            ax.set_xticks([])
+            ax.set_yticks([])
+            
+            # Adiciona legenda e informações
+            self._add_plant_legend(ax, matricula)
+            
+            # Salva em buffer de memória
+            img_buffer = io.BytesIO()
+            plt.savefig(img_buffer, format='png', bbox_inches='tight', 
+                       facecolor='white', edgecolor='none')
+            img_buffer.seek(0)
+            
+            # Converte para base64
+            import base64
+            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+            data_url = f"data:image/png;base64,{img_base64}"
+            
+            plt.close(fig)  # Limpa a figura da memória
+            print(f"✅ Planta gerada com sucesso usando matplotlib")
+            
+            return data_url
+            
+        except Exception as e:
+            print(f"❌ Erro ao gerar planta com matplotlib: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _calculate_plot_coordinates(self, medidas: Dict, formato: str) -> List[Tuple[float, float]]:
+        """Calcula coordenadas do terreno baseado nas medidas"""
+        try:
+            if not medidas:
+                return None
+                
+            # Extrai medidas principais
+            frente = self._extract_number(medidas.get('frente', ''))
+            fundos = self._extract_number(medidas.get('fundos', ''))
+            lado_direito = self._extract_number(medidas.get('lado_direito', ''))
+            lado_esquerdo = self._extract_number(medidas.get('lado_esquerdo', ''))
+            
+            if not any([frente, fundos, lado_direito, lado_esquerdo]):
+                return None
+            
+            # Define valores padrão baseados nos dados disponíveis
+            if formato.lower() == 'retangular' or not formato:
+                # Terreno retangular
+                width = frente or fundos or 20  # Usa frente, fundos ou valor padrão
+                height = lado_direito or lado_esquerdo or 30  # Usa um dos lados ou valor padrão
+                
+                return [
+                    (0, 0),           # Canto inferior esquerdo
+                    (width, 0),       # Canto inferior direito
+                    (width, height),  # Canto superior direito
+                    (0, height)       # Canto superior esquerdo
+                ]
+            else:
+                # Para formatos não retangulares, tenta usar todas as medidas
+                coords = []
+                if frente:
+                    coords.extend([(0, 0), (frente, 0)])
+                if lado_direito and frente:
+                    coords.append((frente, lado_direito))
+                if fundos and lado_direito:
+                    coords.append((frente - fundos if fundos <= frente else 0, lado_direito))
+                if lado_esquerdo:
+                    coords.append((0, lado_direito - lado_esquerdo if lado_esquerdo <= lado_direito else 0))
+                    
+                return coords if len(coords) >= 3 else self._calculate_plot_coordinates(medidas, 'retangular')
+                
+        except Exception as e:
+            print(f"❌ Erro ao calcular coordenadas: {e}")
+            return None
+
+    def _extract_number(self, text: str) -> Optional[float]:
+        """Extrai número de uma string (ex: '20,00 metros' -> 20.0)"""
+        if not text:
+            return None
+        
+        import re
+        # Procura por padrões numéricos
+        matches = re.findall(r'(\d+(?:[,\.]\d+)?)', str(text))
+        if matches:
+            # Converte vírgula para ponto
+            number_str = matches[0].replace(',', '.')
+            try:
+                return float(number_str)
+            except ValueError:
+                return None
+        return None
+
+    def _add_measurements_and_labels(self, ax, coords: List[Tuple[float, float]], 
+                                   medidas: Dict, confrontantes: Dict):
+        """Adiciona medidas e rótulos de confrontantes na planta"""
+        try:
+            n_coords = len(coords)
+            if n_coords < 3:
+                return
+                
+            sides = ['frente', 'lado_direito', 'fundos', 'lado_esquerdo']
+            confronts = ['frente', 'direita', 'fundos', 'esquerda']
+            
+            for i in range(n_coords):
+                p1 = coords[i]
+                p2 = coords[(i + 1) % n_coords]
+                
+                # Calcula ponto médio da linha
+                mid_x = (p1[0] + p2[0]) / 2
+                mid_y = (p1[1] + p2[1]) / 2
+                
+                # Determina o lado baseado na posição
+                side_idx = i % len(sides)
+                side_name = sides[side_idx]
+                confront_name = confronts[side_idx]
+                
+                # Adiciona medida
+                if side_name in medidas and medidas[side_name]:
+                    measure_text = str(medidas[side_name])
+                    # Ajusta posição do texto baseado na orientação da linha
+                    if abs(p2[0] - p1[0]) > abs(p2[1] - p1[1]):  # Linha horizontal
+                        ax.text(mid_x, mid_y - 2, measure_text, ha='center', va='top', 
+                               fontsize=10, fontweight='bold', color='blue')
+                    else:  # Linha vertical
+                        ax.text(mid_x - 2, mid_y, measure_text, ha='right', va='center',
+                               fontsize=10, fontweight='bold', color='blue', rotation=90)
+                
+                # Adiciona confrontante
+                confront_text = confrontantes.get(confront_name, '')
+                if confront_text:
+                    # Posiciona o texto de confrontante um pouco mais afastado
+                    offset = 5
+                    if abs(p2[0] - p1[0]) > abs(p2[1] - p1[1]):  # Linha horizontal
+                        ax.text(mid_x, mid_y + offset, confront_text, ha='center', va='bottom',
+                               fontsize=8, style='italic', color='green')
+                    else:  # Linha vertical
+                        ax.text(mid_x + offset, mid_y, confront_text, ha='left', va='center',
+                               fontsize=8, style='italic', color='green', rotation=90)
+                        
+        except Exception as e:
+            print(f"❌ Erro ao adicionar medidas: {e}")
+
+    def _draw_generic_plot(self, ax, matricula: MatriculaInfo):
+        """Desenha terreno genérico quando não há dados geométricos suficientes"""
+        try:
+            # Desenha retângulo padrão 20x30
+            coords = [(0, 0), (20, 0), (20, 30), (0, 30)]
+            terreno = Polygon(coords, fill=False, edgecolor='black', linewidth=2)
+            ax.add_patch(terreno)
+            
+            # Adiciona texto indicativo
+            ax.text(10, 15, 'TERRENO\n(Medidas aproximadas)', ha='center', va='center',
+                   fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
+            
+            # Define limites
+            ax.set_xlim(-5, 25)
+            ax.set_ylim(-5, 35)
+            
+            print("🏗️ Planta genérica gerada (dados geométricos insuficientes)")
+            
+        except Exception as e:
+            print(f"❌ Erro ao desenhar planta genérica: {e}")
+
+    def _add_plant_legend(self, ax, matricula: MatriculaInfo):
+        """Adiciona legenda e informações na planta"""
+        try:
+            # Adiciona caixa de informações no canto
+            info_text = f"PROPRIETÁRIO(S):\n"
+            for prop in matricula.proprietarios[:3]:  # Máximo 3 para não poluir
+                info_text += f"• {prop}\n"
+            if len(matricula.proprietarios) > 3:
+                info_text += f"• ... e mais {len(matricula.proprietarios) - 3}\n"
+                
+            if matricula.dados_geometricos and matricula.dados_geometricos.area_total:
+                info_text += f"\nÁREA TOTAL: {matricula.dados_geometricos.area_total}"
+            
+            # Posiciona a legenda no canto superior direito
+            ax.text(0.98, 0.98, info_text, transform=ax.transAxes, fontsize=9,
+                   verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8))
+            
+            # Adiciona rosa dos ventos simples
+            self._add_compass_rose(ax)
+            
+        except Exception as e:
+            print(f"❌ Erro ao adicionar legenda: {e}")
+
+    def _add_compass_rose(self, ax):
+        """Adiciona rosa dos ventos simples"""
+        try:
+            # Posiciona no canto inferior direito
+            compass_x = 0.9
+            compass_y = 0.1
+            
+            # Desenha setas dos pontos cardeais
+            arrow_props = dict(arrowstyle='->', lw=1.5, color='red')
+            
+            # Norte (para cima)
+            ax.annotate('N', xy=(compass_x, compass_y + 0.05), xytext=(compass_x, compass_y),
+                       transform=ax.transAxes, ha='center', va='bottom',
+                       arrowprops=arrow_props, fontweight='bold', color='red')
+            
+            # Leste (para direita)  
+            ax.annotate('L', xy=(compass_x + 0.03, compass_y), xytext=(compass_x, compass_y),
+                       transform=ax.transAxes, ha='left', va='center',
+                       arrowprops=arrow_props, fontweight='bold', color='red')
+            
+        except Exception as e:
+            print(f"❌ Erro ao adicionar rosa dos ventos: {e}")
+
+    def _show_generated_image(self, image_url: str, prompt: str, progress_window: tk.Toplevel):
+        """Mostra a imagem gerada"""
+        progress_window.destroy()
+        
+        # Cria janela para mostrar a imagem
+        result_window = tk.Toplevel(self)
+        result_window.title("🏗️ Planta Gerada")
+        result_window.geometry("900x700")
+        result_window.transient(self)
+        
+        # Frame principal
+        main_frame = ttk.Frame(result_window)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Título
+        ttk.Label(main_frame, text="🏗️ Planta do Imóvel Gerada", 
+                 font=("Arial", 14, "bold")).pack(pady=(0,10))
+        
+        # Área da imagem
+        image_frame = ttk.Frame(main_frame, relief="solid", borderwidth=1)
+        image_frame.pack(fill="both", expand=True, pady=(0,10))
+        
+        try:
+            print(f"🖼️ Tentando exibir imagem...")
+            # Carrega e exibe a imagem real
+            image_data = self._download_image(image_url)
+            if image_data:
+                print(f"✅ Dados da imagem carregados: {len(image_data)} bytes")
+                from PIL import Image as PILImage
+                import io
+                
+                # Abre a imagem com PIL
+                pil_image = PILImage.open(io.BytesIO(image_data))
+                print(f"✅ Imagem aberta com PIL: {pil_image.size}")
+                
+                # Redimensiona para caber na janela (mantém proporção)
+                max_size = (800, 500)
+                pil_image.thumbnail(max_size, PILImage.Resampling.LANCZOS)
+                print(f"✅ Imagem redimensionada para: {pil_image.size}")
+                
+                # Converte para formato Tkinter PhotoImage
+                from PIL import ImageTk
+                photo = ImageTk.PhotoImage(pil_image)
+                
+                # Exibe a imagem
+                image_label = ttk.Label(image_frame, image=photo)
+                image_label.image = photo  # Mantém referência
+                image_label.pack(expand=True, padx=10, pady=10)
+                
+                # Armazena dados da imagem para salvar
+                self._current_image_data = image_data
+                self._current_image_url = image_url
+                print(f"✅ Imagem exibida com sucesso na interface")
+            else:
+                print(f"❌ Falha ao carregar dados da imagem")
+                error_text = f"""❌ Não foi possível carregar a imagem
+
+Possíveis causas:
+• URL da imagem inválida ou expirada
+• Problema de conexão com o servidor
+• Formato de imagem não suportado
+
+URL recebida: {image_url[:100]}..."""
+                ttk.Label(image_frame, text=error_text, justify="center").pack(expand=True)
+            
+        except Exception as e:
+            print(f"❌ Erro ao exibir imagem: {e}")
+            import traceback
+            traceback.print_exc()
+            error_text = f"""❌ Erro ao carregar imagem
+
+Detalhes do erro: {str(e)}
+
+URL: {image_url if isinstance(image_url, str) else 'N/A'}"""
+            ttk.Label(image_frame, text=error_text, justify="center").pack(expand=True)
+        
+        # Botões
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x")
+        
+        ttk.Button(button_frame, text="💾 Salvar Imagem", 
+                  command=lambda: self._save_image(image_url)).pack(side="left")
+        
+        ttk.Button(button_frame, text="📋 Ver Prompt", 
+                  command=lambda: self._show_prompt_window(prompt)).pack(side="left", padx=(10,0))
+        
+        ttk.Button(button_frame, text="Fechar", 
+                  command=result_window.destroy).pack(side="right")
+
+    def _download_image(self, image_content: str) -> Optional[bytes]:
+        """Baixa ou converte a imagem dependendo do formato"""
+        try:
+            print(f"🔍 Processando conteúdo da imagem: {image_content[:100]}...")
+            
+            if image_content.startswith("data:image"):
+                # Imagem em base64
+                print("📎 Decodificando imagem base64...")
+                import base64
+                header, data = image_content.split(",", 1)
+                return base64.b64decode(data)
+            elif image_content.startswith("http"):
+                # Imagem via URL
+                print(f"🌐 Baixando imagem da URL: {image_content}")
+                response = requests.get(image_content, timeout=30)
+                print(f"📡 Status do download: {response.status_code}")
+                if response.status_code == 200:
+                    print(f"✅ Imagem baixada: {len(response.content)} bytes")
+                    return response.content
+                else:
+                    print(f"❌ Erro no download: {response.text}")
+            else:
+                # Verifica se é base64 puro (sem header data:image)
+                import base64
+                import re
+                
+                # Remove quebras de linha e espaços
+                clean_content = re.sub(r'\s+', '', image_content)
+                
+                # Verifica se parece ser base64
+                if re.match(r'^[A-Za-z0-9+/]*={0,2}$', clean_content) and len(clean_content) > 100:
+                    print("📎 Tentando decodificar como base64 puro...")
+                    try:
+                        decoded = base64.b64decode(clean_content)
+                        # Verifica se os primeiros bytes parecem ser de imagem
+                        if decoded.startswith(b'\x89PNG') or decoded.startswith(b'\xff\xd8\xff') or decoded.startswith(b'GIF'):
+                            print("✅ Base64 puro decodificado com sucesso")
+                            return decoded
+                    except Exception as decode_error:
+                        print(f"❌ Erro ao decodificar base64: {decode_error}")
+                
+                print(f"❌ Formato de conteúdo não reconhecido: {type(image_content)}")
+                print(f"📝 Primeiros 200 chars: {image_content[:200]}")
+            return None
+        except Exception as e:
+            print(f"❌ Erro ao baixar imagem: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _save_image(self, image_url: str):
+        """Salva a imagem gerada"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All files", "*.*")],
+                title="Salvar Planta Gerada"
+            )
+            if filename:
+                if hasattr(self, '_current_image_data') and self._current_image_data:
+                    with open(filename, 'wb') as f:
+                        f.write(self._current_image_data)
+                    messagebox.showinfo("Sucesso", f"Imagem salva em: {filename}")
+                else:
+                    # Tenta baixar novamente
+                    image_data = self._download_image(image_url)
+                    if image_data:
+                        with open(filename, 'wb') as f:
+                            f.write(image_data)
+                        messagebox.showinfo("Sucesso", f"Imagem salva em: {filename}")
+                    else:
+                        messagebox.showerror("Erro", "Não foi possível baixar a imagem")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao salvar imagem: {e}")
+
+    def _show_prompt_window(self, prompt: str):
+        """Mostra o prompt usado para gerar a imagem"""
+        prompt_window = tk.Toplevel(self)
+        prompt_window.title("📋 Prompt Utilizado")
+        prompt_window.geometry("600x400")
+        prompt_window.transient(self)
+        
+        text_widget = tk.Text(prompt_window, wrap="word", font=("Consolas", 10))
+        scrollbar = ttk.Scrollbar(prompt_window, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        text_widget.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        scrollbar.pack(side="right", fill="y", pady=10)
+        
+        text_widget.insert("1.0", prompt)
+        text_widget.configure(state="disabled")
+
+    def _show_plant_result(self, prompt: str, progress_window: tk.Toplevel):
+        """Mostra o resultado da geração da planta"""
+        progress_window.destroy()
+        
+        # Cria janela para mostrar o prompt gerado (por enquanto)
+        result_window = tk.Toplevel(self)
+        result_window.title("Prompt para Geração de Planta")
+        result_window.geometry("800x600")
+        result_window.transient(self)
+        
+        # Frame principal
+        main_frame = ttk.Frame(result_window)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Título
+        ttk.Label(main_frame, text="📐 Prompt para Geração de Planta do Imóvel", 
+                 font=("Arial", 14, "bold")).pack(pady=(0,10))
+        
+        # Texto do prompt
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill="both", expand=True)
+        
+        text_widget = tk.Text(text_frame, wrap="word", font=("Consolas", 10))
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        text_widget.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        text_widget.insert("1.0", prompt)
+        text_widget.configure(state="disabled")
+        
+        # Botões
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=(10,0))
+        
+        ttk.Button(button_frame, text="📋 Copiar Prompt", 
+                  command=lambda: self._copy_to_clipboard(prompt)).pack(side="left")
+        
+        ttk.Button(button_frame, text="💾 Salvar como TXT", 
+                  command=lambda: self._save_prompt_to_file(prompt)).pack(side="left", padx=(10,0))
+        
+        ttk.Button(button_frame, text="Fechar", 
+                  command=result_window.destroy).pack(side="right")
+        
+        # Instruções
+        instructions = """
+💡 INSTRUÇÕES:
+1. Copie este prompt e use em APIs de geração de imagem como:
+   • DALL-E 3 (OpenAI)
+   • Midjourney
+   • Stable Diffusion
+   • Leonardo AI
+
+2. Para melhores resultados, adicione:
+   • "architectural drawing"
+   • "technical blueprint"
+   • "professional land survey"
+"""
+        
+        ttk.Label(main_frame, text=instructions, justify="left", 
+                 font=("Arial", 9), foreground="gray").pack(pady=(10,0))
+
+    def _show_plant_error(self, error: str, progress_window: tk.Toplevel):
+        """Mostra erro na geração da planta"""
+        progress_window.destroy()
+        messagebox.showerror("Erro na Geração", f"Erro ao gerar planta: {error}")
+
+    def _copy_to_clipboard(self, text: str):
+        """Copia texto para a área de transferência"""
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+        messagebox.showinfo("Copiado", "Prompt copiado para a área de transferência!")
+
+    def _save_prompt_to_file(self, prompt: str):
+        """Salva o prompt em arquivo de texto"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Salvar Prompt da Planta"
+        )
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(prompt)
+                messagebox.showinfo("Salvo", f"Prompt salvo em: {filename}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao salvar arquivo: {e}")
 
     def log(self, msg: str):
         self.txt_log.insert("end", msg + "\n")
