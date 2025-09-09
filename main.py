@@ -923,12 +923,27 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             else:
                 print(f"  - content is: {repr(content)}")
         
-        content = data["choices"][0]["message"]["content"]
-        print(f"🔍 Content final: {len(content) if content else 0} chars")
-        if content:
-            print(f"📝 Primeiros 500 chars: {content[:500]}")
-        else:
-            print(f"⚠️ Content está vazio ou None!")
+        # Acesso seguro ao conteúdo da resposta
+        try:
+            if not data.get("choices") or len(data["choices"]) == 0:
+                raise IndexError("Lista 'choices' vazia na resposta da API")
+            
+            choice = data["choices"][0]
+            if not choice.get("message"):
+                raise KeyError("Campo 'message' não encontrado na resposta")
+                
+            content = choice["message"].get("content", "")
+            
+            print(f"🔍 Content final: {len(content) if content else 0} chars")
+            if content:
+                print(f"📝 Primeiros 500 chars: {content[:500]}")
+            else:
+                print(f"⚠️ Content está vazio ou None!")
+                
+        except (IndexError, KeyError, TypeError) as e:
+            print(f"❌ Erro ao acessar conteúdo da resposta: {e}")
+            print(f"📊 Estrutura da resposta: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+            raise RuntimeError(f"Estrutura de resposta inválida da API: {e}")
         
         try:
             # Limpa marcadores de código markdown se presentes
@@ -1048,13 +1063,13 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
             temperature=0.0,
             max_tokens=1500
         )
-        content = data["choices"][0]["message"]["content"]
+        # Acesso seguro ao conteúdo
         try:
-            clean_content = clean_json_response(content)
-            parsed = json.loads(clean_content)
-        except json.JSONDecodeError as e:
-            print(f"Erro ao fazer parse do JSON: {e}")
-            print(f"Conteúdo da resposta: {content[:500]}")
+            if not data.get("choices") or len(data["choices"]) == 0:
+                raise IndexError("Lista 'choices' vazia na resposta da API")
+            content = data["choices"][0]["message"]["content"]
+        except (IndexError, KeyError, TypeError) as e:
+            print(f"Erro ao acessar conteúdo da resposta: {e}")
             parsed = {
                 "matriculas_encontradas": [],
                 "matricula_principal": None,
@@ -1065,22 +1080,27 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
                 "confrontacao_completa": None,
                 "proprietarios_identificados": {},
                 "confidence": None,
-                "reasoning": f"Erro de parsing JSON: {content}"
+                "reasoning": f"Erro de estrutura da resposta da API: {e}"
             }
-        except Exception as e:
-            print(f"Erro inesperado no parsing: {e}")
-            parsed = {
-                "matriculas_encontradas": [],
-                "matricula_principal": None,
-                "matriculas_confrontantes": [],
-                "lotes_confrontantes": [],
-                "matriculas_nao_confrontantes": [],
-                "lotes_sem_matricula": [],
-                "confrontacao_completa": None,
-                "proprietarios_identificados": {},
-                "confidence": None,
-                "reasoning": f"Erro: {e}"
-            }
+        else:
+            try:
+                clean_content = clean_json_response(content)
+                parsed = json.loads(clean_content)
+            except json.JSONDecodeError as e:
+                print(f"Erro ao fazer parse do JSON: {e}")
+                print(f"Conteúdo da resposta: {content[:500]}")
+                parsed = {
+                    "matriculas_encontradas": [],
+                    "matricula_principal": None,
+                    "matriculas_confrontantes": [],
+                    "lotes_confrontantes": [],
+                    "matriculas_nao_confrontantes": [],
+                    "lotes_sem_matricula": [],
+                    "confrontacao_completa": None,
+                    "proprietarios_identificados": {},
+                    "confidence": None,
+                    "reasoning": f"Erro de parsing JSON: {content}"
+                }
 
         # Converte dados das matrículas para objetos MatriculaInfo
         matriculas_obj = []
@@ -1124,7 +1144,16 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
             temperature=0.0,
             max_tokens=800
         )
-        content = data["choices"][0]["message"]["content"]
+        # Acesso seguro ao conteúdo do chunk
+        try:
+            if not data.get("choices") or len(data["choices"]) == 0:
+                print(f"Chunk {i}: Lista 'choices' vazia")
+                continue
+            content = data["choices"][0]["message"]["content"]
+        except (IndexError, KeyError, TypeError) as e:
+            print(f"Erro no chunk {i} ao acessar resposta: {e}")
+            continue
+            
         try:
             clean_content = clean_json_response(content)
             parsed = json.loads(clean_content)
@@ -1134,7 +1163,7 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
                 all_evidence.extend([e for e in parsed["evidence"] if isinstance(e, str)])
         except json.JSONDecodeError as e:
             print(f"Erro JSON no chunk {i}: {e}")
-            print(f"Conteúdo: {content[:200]}")
+            print(f"Conteúdo: {content[:200] if 'content' in locals() else 'N/A'}")
         except Exception as e:
             print(f"Erro no chunk {i}: {e}")
             # ignora erro parcial
@@ -1167,33 +1196,44 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
         temperature=0.0,
         max_tokens=900
     )
-    content = data["choices"][0]["message"]["content"]
+    # Acesso seguro ao conteúdo da chamada final
     try:
-        clean_content = clean_json_response(content)
-        parsed = json.loads(clean_content)
-    except json.JSONDecodeError as e:
-        print(f"Erro JSON na chamada final: {e}")
-        print(f"Conteúdo: {content[:500]}")
+        if not data.get("choices") or len(data["choices"]) == 0:
+            raise IndexError("Lista 'choices' vazia na resposta final da API")
+        content = data["choices"][0]["message"]["content"]
+    except (IndexError, KeyError, TypeError) as e:
+        print(f"Erro ao acessar resposta final: {e}")
         parsed = {
             "matriculas_encontradas": [],
             "matricula_principal": None,
             "matriculas_confrontantes": [],
+            "lotes_confrontantes": [],
+            "matriculas_nao_confrontantes": [],
+            "lotes_sem_matricula": [],
             "confrontacao_completa": None,
             "proprietarios_identificados": {},
             "confidence": None,
-            "reasoning": f"Erro JSON: {content}"
+            "reasoning": f"Erro de estrutura na resposta final da API: {e}"
         }
-    except Exception as e:
-        print(f"Erro na chamada final: {e}")
-        parsed = {
-            "matriculas_encontradas": [],
-            "matricula_principal": None,
-            "matriculas_confrontantes": [],
-            "confrontacao_completa": None,
-            "proprietarios_identificados": {},
-            "confidence": None,
-            "reasoning": f"Erro: {e}"
-        }
+    else:
+        try:
+            clean_content = clean_json_response(content)
+            parsed = json.loads(clean_content)
+        except json.JSONDecodeError as e:
+            print(f"Erro JSON na chamada final: {e}")
+            print(f"Conteúdo: {content[:500]}")
+            parsed = {
+                "matriculas_encontradas": [],
+                "matricula_principal": None,
+                "matriculas_confrontantes": [],
+                "lotes_confrontantes": [],
+                "matriculas_nao_confrontantes": [],
+                "lotes_sem_matricula": [],
+                "confrontacao_completa": None,
+                "proprietarios_identificados": {},
+                "confidence": None,
+                "reasoning": f"Erro JSON: {content}"
+            }
 
     # Converte dados das matrículas para objetos MatriculaInfo
     matriculas_obj = []
