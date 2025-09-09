@@ -322,23 +322,31 @@ def get_pdf_page_count(pdf_path: str) -> int:
         print(f"Erro ao contar páginas do PDF: {e}")
         return 0
 
-def pdf_to_images(pdf_path: str, max_pages: int = 10) -> List[Image.Image]:
+def pdf_to_images(pdf_path: str, max_pages: Optional[int] = 10) -> List[Image.Image]:
     """
     Converte PDF para lista de imagens PIL para análise visual.
+    Se max_pages for None, processa todas as páginas.
     """
     images = []
     try:
         # Primeiro tenta com pdf2image (mais rápido)
         if PDF2IMAGE_AVAILABLE:
             try:
-                pdf_images = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=max_pages)
-                return pdf_images[:max_pages]
+                if max_pages is None:
+                    # Sem limite - processa todas as páginas
+                    pdf_images = convert_from_path(pdf_path, dpi=200)
+                else:
+                    pdf_images = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=max_pages)
+                return pdf_images
             except Exception:
                 pass
         
         # Fallback com PyMuPDF
         doc = fitz.open(pdf_path)
-        for page_num in range(min(len(doc), max_pages)):
+        total_pages = len(doc)
+        pages_to_process = total_pages if max_pages is None else min(total_pages, max_pages)
+        
+        for page_num in range(pages_to_process):
             page = doc[page_num]
             # Converte página para imagem
             mat = fitz.Matrix(2.0, 2.0)  # escala 2x para melhor qualidade
@@ -436,19 +444,25 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
 
     try:
         # Debug detalhado do payload
-        message_content = payload['messages'][1]['content']
-        image_count = sum(1 for item in message_content if item.get('type') == 'image_url')
-        text_count = sum(1 for item in message_content if item.get('type') == 'text')
-        
-        print(f"🌐 Fazendo requisição para: {OPENROUTER_URL}")
-        print(f"📦 Payload contém {len(message_content)} elementos total")
-        print(f"🖼️ Imagens no payload: {image_count}")
-        print(f"📝 Textos no payload: {text_count}")
-        
-        # Calcula tamanho total do payload em MB
-        import sys
-        payload_size_mb = sys.getsizeof(str(payload)) / (1024 * 1024)
-        print(f"📐 Tamanho do payload: {payload_size_mb:.2f}MB")
+        try:
+            message_content = payload['messages'][1]['content']
+            image_count = sum(1 for item in message_content if item.get('type') == 'image_url')
+            text_count = sum(1 for item in message_content if item.get('type') == 'text')
+            
+            print(f"🌐 Fazendo requisição para: {OPENROUTER_URL}")
+            print(f"📦 Payload contém {len(message_content)} elementos total")
+            print(f"🖼️ Imagens no payload: {image_count}")
+            print(f"📝 Textos no payload: {text_count}")
+            print(f"🔑 Modelo: {payload.get('model', 'N/A')}")
+            
+            # Calcula tamanho total do payload em MB
+            import sys
+            payload_size_mb = sys.getsizeof(str(payload)) / (1024 * 1024)
+            print(f"📐 Tamanho do payload: {payload_size_mb:.2f}MB")
+            
+        except Exception as e:
+            print(f"⚠️ Erro ao analisar payload: {e}")
+            print(f"📊 Estrutura do payload: {list(payload.keys()) if isinstance(payload, dict) else type(payload)}")
         
         resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
         
@@ -456,8 +470,20 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
         print(f"📊 Headers da resposta: {dict(list(resp.headers.items())[:5])}...")  # primeiros 5 headers
         
         if resp.status_code != 200:
-            print(f"❌ Erro HTTP: {resp.text}")
-            raise RuntimeError(f"API retornou status {resp.status_code}: {resp.text}")
+            print(f"❌ Erro HTTP {resp.status_code}: {resp.text[:500]}")
+            # Tenta extrair mais detalhes do erro
+            try:
+                error_data = json.loads(resp.text)
+                if "error" in error_data:
+                    error_msg = error_data["error"]
+                    if isinstance(error_msg, dict):
+                        error_details = error_msg.get("message", str(error_msg))
+                    else:
+                        error_details = str(error_msg)
+                    raise RuntimeError(f"API Error ({resp.status_code}): {error_details}")
+            except json.JSONDecodeError:
+                pass
+            raise RuntimeError(f"API retornou status {resp.status_code}: {resp.text[:200]}")
             
         response_text = resp.text.strip()
         print(f"📝 Tamanho da resposta: {len(response_text)} chars")
@@ -466,17 +492,43 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
             raise RuntimeError("Resposta vazia da API")
         
         # Debug da resposta bruta
-        if len(response_text) < 100:
-            print(f"📄 Resposta completa (pequena): {response_text}")
+        if len(response_text) < 200:
+            print(f"📄 Resposta completa: {response_text}")
         else:
-            print(f"📄 Início da resposta: {response_text[:200]}...")
+            print(f"📄 Início da resposta: {response_text[:300]}...")
+            print(f"📄 Final da resposta: ...{response_text[-100:]}")
             
-        data = json.loads(response_text)
+        # Parse mais robusto do JSON
+        try:
+            data = json.loads(response_text)
+        except json.JSONDecodeError as e:
+            print(f"❌ Erro JSON: {e}")
+            print(f"📄 Conteúdo problemático: {response_text[:1000]}")
+            raise RuntimeError(f"Resposta da API não é JSON válido: {e}")
         
-        if "choices" not in data or not data["choices"]:
-            print(f"❌ Estrutura da resposta: {list(data.keys())}")
-            raise RuntimeError(f"Formato de resposta inesperado: {data}")
-            
+        # Debug da estrutura da resposta
+        print(f"🔍 Estrutura da resposta: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Resposta da API não é um objeto JSON: {type(data)}")
+        
+        if "choices" not in data:
+            print(f"❌ Campo 'choices' não encontrado. Campos disponíveis: {list(data.keys())}")
+            # Verifica se há uma mensagem de erro
+            if "error" in data:
+                error_msg = data["error"]
+                raise RuntimeError(f"API retornou erro: {error_msg}")
+            raise RuntimeError(f"Campo 'choices' ausente na resposta. Estrutura: {data}")
+        
+        if not data["choices"]:
+            print(f"❌ Lista 'choices' está vazia")
+            raise RuntimeError("Lista 'choices' vazia na resposta da API")
+        
+        if not isinstance(data["choices"], list):
+            print(f"❌ 'choices' não é uma lista: {type(data['choices'])}")
+            raise RuntimeError(f"Campo 'choices' deve ser uma lista, mas é: {type(data['choices'])}")
+        
+        print(f"✅ Resposta válida com {len(data['choices'])} choice(s)")
         return data
         
     except requests.exceptions.RequestException as e:
@@ -757,13 +809,11 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             total_pages = get_pdf_page_count(file_path)
             print(f"📊 PDF contém {total_pages} página(s)")
             
-            if total_pages > 30:
-                raise ValueError(
-                    f"PDF com {total_pages} páginas excede o limite máximo de 30 páginas. "
-                    f"Por favor, divida o documento em arquivos menores ou processe apenas as páginas relevantes."
-                )
+            # Removido limite de páginas - processará qualquer quantidade
+            if total_pages > 100:
+                print(f"⚠️ PDF com {total_pages} páginas - processamento pode demorar")
             
-            images = pdf_to_images(file_path, max_pages=30)  # máximo de 30 páginas
+            images = pdf_to_images(file_path, max_pages=None)  # sem limite de páginas
             print(f"📄 PDF convertido em {len(images)} página(s)")
         elif ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]:
             images = [Image.open(file_path)]
@@ -794,25 +844,28 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         
         print(f"📈 TOTAL: {len(images_b64)} imagens preparadas, {total_size_kb:.1f}KB")
         
-        # Verificação de limitações da API
-        MAX_IMAGES = 30  # Limitação máxima permitida
-        MAX_SIZE_MB = 50  # Limitação conservadora de payload
-        
-        # Verificação já foi feita no início - não deve exceder 30 páginas
-        if len(images_b64) > MAX_IMAGES:
-            print(f"⚠️ ERRO INTERNO: {len(images_b64)} imagens excede limite de {MAX_IMAGES}")
-            raise ValueError(f"Erro interno: Número de imagens ({len(images_b64)}) excede limite máximo")
-        
-        if total_size_kb / 1024 > MAX_SIZE_MB:
-            print(f"⚠️ Payload muito grande ({total_size_kb/1024:.1f}MB) - reduzindo qualidade das imagens")
-            # Reconverte com qualidade menor
+        # Processamento inteligente baseado no tamanho real
+        # Ajuste dinâmico da qualidade baseado no número de páginas
+        if len(images_b64) > 50:
+            print(f"⚠️ Muitas páginas ({len(images_b64)}) - otimizando qualidade automaticamente")
+            # Reconverte com qualidade menor para muitas páginas
             images_b64 = []
-            for i, img in enumerate(images[:MAX_IMAGES]):
-                b64 = image_to_base64(img, max_size=1024, jpeg_quality=60)  # Qualidade reduzida
+            for i, img in enumerate(images):
+                # Qualidade menor para documentos grandes
+                b64 = image_to_base64(img, max_size=800, jpeg_quality=50)
                 if b64:
                     images_b64.append(b64)
             total_size_kb = sum(len(img) // 1024 for img in images_b64)
-            print(f"📈 APÓS REDUÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+            print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+        elif total_size_kb / 1024 > 20:  # Se maior que 20MB, otimiza
+            print(f"⚠️ Payload grande ({total_size_kb/1024:.1f}MB) - otimizando qualidade")
+            images_b64 = []
+            for i, img in enumerate(images):
+                b64 = image_to_base64(img, max_size=1024, jpeg_quality=60)
+                if b64:
+                    images_b64.append(b64)
+            total_size_kb = sum(len(img) // 1024 for img in images_b64)
+            print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
         
         if not images_b64:
             raise ValueError("Não foi possível converter nenhuma imagem para envio")
@@ -2003,10 +2056,10 @@ class App(tk.Tk):
                 issues.append("❌ Arquivo não encontrado")
                 return "; ".join(issues)
             
-            # Verifica tamanho do arquivo
+            # Verifica tamanho do arquivo (apenas informativo)
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            if file_size_mb > 50:
-                issues.append(f"⚠️ Arquivo muito grande ({file_size_mb:.1f}MB)")
+            if file_size_mb > 100:  # Aumentou limite
+                issues.append(f"ℹ️ Arquivo grande ({file_size_mb:.1f}MB) - processamento pode demorar")
             
             # Verifica extensão
             ext = os.path.splitext(file_path.lower())[1]
@@ -2014,8 +2067,8 @@ class App(tk.Tk):
                 # Verifica número de páginas
                 try:
                     page_count = get_pdf_page_count(file_path)
-                    if page_count > 30:
-                        issues.append(f"⚠️ PDF com {page_count} páginas (limite: 30)")
+                    if page_count > 200:  # Limite muito alto, apenas informativo
+                        issues.append(f"ℹ️ PDF com {page_count} páginas - processamento pode demorar")
                     elif page_count == 0:
                         issues.append("❌ PDF corrompido ou vazio")
                 except:
