@@ -806,23 +806,55 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         ext = os.path.splitext(file_path.lower())[1]
         if ext == ".pdf":
             # Verifica o número de páginas ANTES de processar
-            total_pages = get_pdf_page_count(file_path)
-            print(f"📊 PDF contém {total_pages} página(s)")
+            try:
+                total_pages = get_pdf_page_count(file_path)
+                print(f"📊 PDF contém {total_pages} página(s)")
+            except Exception as e:
+                print(f"⚠️ Erro ao contar páginas: {e}")
+                total_pages = 0
             
             # Removido limite de páginas - processará qualquer quantidade
             if total_pages > 100:
                 print(f"⚠️ PDF com {total_pages} páginas - processamento pode demorar")
             
-            images = pdf_to_images(file_path, max_pages=None)  # sem limite de páginas
-            print(f"📄 PDF convertido em {len(images)} página(s)")
+            try:
+                images = pdf_to_images(file_path, max_pages=None)  # sem limite de páginas
+                print(f"📄 PDF convertido em {len(images) if images else 0} página(s)")
+            except Exception as e:
+                print(f"❌ Erro ao converter PDF: {e}")
+                print(f"🔍 Tipo do erro: {type(e).__name__}")
+                raise ValueError(f"Erro ao converter PDF para imagens: {e}")
+                
         elif ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]:
-            images = [Image.open(file_path)]
-            print(f"🖼️ Imagem carregada para análise")
+            try:
+                images = [Image.open(file_path)]
+                print(f"🖼️ Imagem carregada para análise")
+            except Exception as e:
+                print(f"❌ Erro ao abrir imagem: {e}")
+                raise ValueError(f"Erro ao abrir imagem: {e}")
         else:
             raise ValueError(f"Formato de arquivo não suportado para análise visual: {ext}")
         
         if not images:
             raise ValueError("Não foi possível extrair imagens do arquivo")
+        
+        # Validação das imagens
+        print(f"🔍 Validando {len(images)} imagem(ns)...")
+        images_validas = []
+        for i, img in enumerate(images):
+            try:
+                if img and hasattr(img, 'size') and img.size[0] > 0 and img.size[1] > 0:
+                    images_validas.append(img)
+                else:
+                    print(f"⚠️ Imagem {i+1} inválida ou vazia")
+            except Exception as e:
+                print(f"⚠️ Erro ao validar imagem {i+1}: {e}")
+        
+        if not images_validas:
+            raise ValueError("Nenhuma imagem válida foi extraída do arquivo")
+            
+        images = images_validas
+        print(f"✅ {len(images)} imagem(ns) válida(s) para processar")
         
         print(f"🔄 Preparando {len(images)} imagem(ns) para envio à IA...")
         
@@ -831,16 +863,25 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         total_size_kb = 0
         
         for i, img in enumerate(images):
-            print(f"📐 Processando imagem {i+1}: {img.size[0]}x{img.size[1]} pixels")
-            b64 = image_to_base64(img, max_size=1536)  # tamanho maior para documentos
-            if b64:
-                size_kb = len(b64) // 1024
-                total_size_kb += size_kb
-                images_b64.append(b64)
-                print(f"✅ Imagem {i+1} preparada ({size_kb:.1f}KB)")
-                print(f"📊 Total acumulado: {total_size_kb:.1f}KB")
-            else:
-                print(f"⚠️ Falha ao processar imagem {i+1}")
+            try:
+                if not img or not hasattr(img, 'size'):
+                    print(f"⚠️ Imagem {i+1} inválida - pulando")
+                    continue
+                    
+                print(f"📐 Processando imagem {i+1}: {img.size[0]}x{img.size[1]} pixels")
+                b64 = image_to_base64(img, max_size=1536)  # tamanho maior para documentos
+                if b64:
+                    size_kb = len(b64) // 1024
+                    total_size_kb += size_kb
+                    images_b64.append(b64)
+                    print(f"✅ Imagem {i+1} preparada ({size_kb:.1f}KB)")
+                    print(f"📊 Total acumulado: {total_size_kb:.1f}KB")
+                else:
+                    print(f"⚠️ Falha ao processar imagem {i+1}")
+            except Exception as e:
+                print(f"❌ Erro ao processar imagem {i+1}: {e}")
+                print(f"🔍 Tipo do erro: {type(e).__name__}")
+                continue
         
         print(f"📈 TOTAL: {len(images_b64)} imagens preparadas, {total_size_kb:.1f}KB")
         
@@ -1536,8 +1577,16 @@ class App(tk.Tk):
 
                 # Log dos resultados principais
                 if res.reasoning and "Erro na análise visual" in res.reasoning:
-                    # Extrai mais detalhes do erro
-                    erro_detalhes = res.reasoning.split("Erro na análise visual: ")[-1][:100]
+                    # Extrai mais detalhes do erro com proteção
+                    try:
+                        partes = res.reasoning.split("Erro na análise visual: ")
+                        if len(partes) > 1:
+                            erro_detalhes = partes[-1][:100]
+                        else:
+                            erro_detalhes = res.reasoning[:100]
+                    except Exception:
+                        erro_detalhes = "Erro desconhecido"
+                    
                     self.queue.put(("log", f"⚠️ Problema na análise visual: {erro_detalhes}"))
                     self.queue.put(("log", f"💡 Possíveis causas: arquivo muito grande, ilegível ou formato não suportado"))
                 elif res.matriculas_encontradas:
