@@ -1,0 +1,22 @@
+# GUI
+# tkinter  # Incluído no Python padrão
+
+# OCR & PDF Processing
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+ocrmypdf>=15.0.0
+pdf2image>=1.17.0
+
+# HTTP & Environment
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Type hints (for older Python versions)
+typing-extensions>=4.7.0
+
+# Optional: Faster OCR alternative (comentado por padrão - descomente se quiser testar)
+# easyocr>=1.7.0
+
+# Optional: CSV handling (built-in module, but for clarity)
+# csv  # Built-in module
