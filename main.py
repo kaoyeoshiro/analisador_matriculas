@@ -890,23 +890,45 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         if len(images_b64) > 50:
             print(f"⚠️ Muitas páginas ({len(images_b64)}) - otimizando qualidade automaticamente")
             # Reconverte com qualidade menor para muitas páginas
-            images_b64 = []
-            for i, img in enumerate(images):
-                # Qualidade menor para documentos grandes
-                b64 = image_to_base64(img, max_size=800, jpeg_quality=50)
-                if b64:
-                    images_b64.append(b64)
-            total_size_kb = sum(len(img) // 1024 for img in images_b64)
-            print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+            print(f"🔍 DEBUG: Tentando otimizar {len(images)} imagens originais...")
+            images_b64_temp = []
+            try:
+                for i, img in enumerate(images):
+                    print(f"🔄 Reprocessando imagem {i+1}/{len(images)} com qualidade reduzida...")
+                    # Qualidade menor para documentos grandes
+                    b64 = image_to_base64(img, max_size=800, jpeg_quality=50)
+                    if b64:
+                        images_b64_temp.append(b64)
+                        print(f"✅ Imagem {i+1} otimizada com sucesso")
+                    else:
+                        print(f"⚠️ Falha ao otimizar imagem {i+1}")
+                images_b64 = images_b64_temp
+                total_size_kb = sum(len(img) // 1024 for img in images_b64) if images_b64 else 0
+                print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+            except Exception as e:
+                print(f"❌ ERRO na otimização de muitas páginas: {e}")
+                print(f"🔍 Tipo do erro: {type(e).__name__}")
+                raise
         elif total_size_kb / 1024 > 20:  # Se maior que 20MB, otimiza
             print(f"⚠️ Payload grande ({total_size_kb/1024:.1f}MB) - otimizando qualidade")
-            images_b64 = []
-            for i, img in enumerate(images):
-                b64 = image_to_base64(img, max_size=1024, jpeg_quality=60)
-                if b64:
-                    images_b64.append(b64)
-            total_size_kb = sum(len(img) // 1024 for img in images_b64)
-            print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+            print(f"🔍 DEBUG: Tentando otimizar {len(images)} imagens originais...")
+            images_b64_temp = []
+            try:
+                for i, img in enumerate(images):
+                    print(f"🔄 Reprocessando imagem {i+1}/{len(images)} para reduzir tamanho...")
+                    b64 = image_to_base64(img, max_size=1024, jpeg_quality=60)
+                    if b64:
+                        images_b64_temp.append(b64)
+                        print(f"✅ Imagem {i+1} comprimida com sucesso")
+                    else:
+                        print(f"⚠️ Falha ao comprimir imagem {i+1}")
+                images_b64 = images_b64_temp
+                total_size_kb = sum(len(img) // 1024 for img in images_b64) if images_b64 else 0
+                print(f"📈 APÓS OTIMIZAÇÃO: {len(images_b64)} imagens, {total_size_kb:.1f}KB")
+            except Exception as e:
+                print(f"❌ ERRO na otimização de payload grande: {e}")
+                print(f"🔍 Tipo do erro: {type(e).__name__}")
+                raise
         
         if not images_b64:
             raise ValueError("Não foi possível converter nenhuma imagem para envio")
@@ -992,6 +1014,7 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         print(f"🚀 Enviando {len(images_b64)} imagem(ns) para {model}...")
         print(f"📏 Tamanho do prompt: {len(vision_prompt)} chars")
         
+        print(f"🔍 DEBUG: Iniciando chamada da API...")
         data = call_openrouter_vision(
             model=model,
             system_prompt=SYSTEM_PROMPT,
@@ -1002,6 +1025,7 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         )
         
         print(f"✅ Resposta da API recebida com sucesso")
+        print(f"🔍 DEBUG: Iniciando processamento da resposta...")
         
         # Debug da estrutura da resposta
         print(f"🔍 Estrutura da resposta:")
@@ -1040,11 +1064,16 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             raise RuntimeError(f"Estrutura de resposta inválida da API: {e}")
         
         try:
+            print(f"🔍 DEBUG: Iniciando limpeza do JSON...")
             # Limpa marcadores de código markdown se presentes
             clean_content = clean_json_response(content)
             print(f"🔧 JSON limpo para parse: {clean_content[:100]}...")
+            print(f"🔍 DEBUG: JSON limpo tem {len(clean_content)} caracteres")
+            
+            print(f"🔍 DEBUG: Tentando fazer json.loads()...")
             parsed = json.loads(clean_content)
-            print(f"✅ JSON parsed com sucesso")
+            print(f"✅ JSON parsed com sucesso! Tipo: {type(parsed)}")
+            print(f"🔍 Keys no parsed: {list(parsed.keys()) if isinstance(parsed, dict) else 'não é dict'}")
         except json.JSONDecodeError as e:
             print(f"❌ Erro ao fazer parse do JSON da visão: {e}")
             print(f"📄 Conteúdo completo da resposta:")
@@ -1078,16 +1107,29 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
                 matriculas_obj.append(matricula)
 
         # Processa lotes confrontantes
+        print(f"🔍 DEBUG: Processando lotes confrontantes...")
         lotes_confrontantes_obj = []
-        for lote_data in parsed.get("lotes_confrontantes", []):
-            if isinstance(lote_data, dict):
-                lote_confronta = LoteConfronta(
-                    identificador=lote_data.get("identificador", ""),
-                    tipo=lote_data.get("tipo", "outros"),
-                    matricula_anexada=lote_data.get("matricula_anexada"),
-                    direcao=lote_data.get("direcao")
-                )
-                lotes_confrontantes_obj.append(lote_confronta)
+        lotes_confrontantes_raw = parsed.get("lotes_confrontantes", [])
+        print(f"🔍 lotes_confrontantes encontrados: {len(lotes_confrontantes_raw)} itens")
+        
+        try:
+            for i, lote_data in enumerate(lotes_confrontantes_raw):
+                print(f"🔍 Processando lote {i+1}: {type(lote_data)}")
+                if isinstance(lote_data, dict):
+                    lote_confronta = LoteConfronta(
+                        identificador=lote_data.get("identificador", ""),
+                        tipo=lote_data.get("tipo", "outros"),
+                        matricula_anexada=lote_data.get("matricula_anexada"),
+                        direcao=lote_data.get("direcao")
+                    )
+                    lotes_confrontantes_obj.append(lote_confronta)
+                    print(f"✅ Lote {i+1} processado com sucesso")
+                else:
+                    print(f"⚠️ Lote {i+1} não é dict: {lote_data}")
+        except Exception as e:
+            print(f"❌ ERRO ao processar lotes confrontantes: {e}")
+            print(f"🔍 Tipo do erro: {type(e).__name__}")
+            raise
 
         return AnalysisResult(
             arquivo=fname_placeholder,
