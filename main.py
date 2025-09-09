@@ -70,11 +70,23 @@ class MatriculaInfo:
     quadra: Optional[str] = None  # número da quadra
 
 @dataclass
+class LoteConfronta:
+    """Informações sobre um lote confrontante"""
+    identificador: str  # "lote 10", "matrícula 1234", etc.
+    tipo: str  # "lote", "matrícula", "pessoa", "via_publica", "estado", "outros"
+    matricula_anexada: Optional[str] = None  # número da matrícula se foi anexada
+    direcao: Optional[str] = None  # norte, sul, leste, oeste, etc.
+    
+@dataclass
 class AnalysisResult:
     arquivo: str
     matriculas_encontradas: List[MatriculaInfo]
     matricula_principal: Optional[str]  # número da matrícula de usucapião
     matriculas_confrontantes: List[str]  # números das matrículas confrontantes
+    # NOVOS CAMPOS PARA MELHOR CONTROLE
+    lotes_confrontantes: List[LoteConfronta]  # todos os confrontantes identificados
+    matriculas_nao_confrontantes: List[str]  # matrículas anexadas que NÃO são confrontantes
+    lotes_sem_matricula: List[str]  # lotes confrontantes sem matrícula anexada
     confrontacao_completa: Optional[bool]  # se todas confrontantes foram apresentadas
     proprietarios_identificados: Dict[str, List[str]]  # número -> lista proprietários
     confidence: Optional[float]
@@ -654,7 +666,7 @@ AGGREGATE_PROMPT = (
     "- ✅ Mínimo 4 confrontantes da principal?\n"
     "- ✅ Proprietários atuais confirmados?\n"
     "\n"
-    "Responda em JSON com este esquema:\n"
+    "Responda em JSON com este esquema EXPANDIDO:\n"
     "{\n"
     '  "matriculas_encontradas": [\n'
     '    {\n'
@@ -669,11 +681,38 @@ AGGREGATE_PROMPT = (
     '  ],\n'
     '  "matricula_principal": "12345",\n'
     '  "matriculas_confrontantes": ["12346", "12347"],\n'
+    '  "lotes_confrontantes": [\n'
+    '    {\n'
+    '      "identificador": "lote 11",\n'
+    '      "tipo": "lote",\n'
+    '      "matricula_anexada": "12346",\n'
+    '      "direcao": "norte"\n'
+    '    },\n'
+    '    {\n'
+    '      "identificador": "Rua das Flores",\n'
+    '      "tipo": "via_publica",\n'
+    '      "matricula_anexada": null,\n'
+    '      "direcao": "sul"\n'
+    '    }\n'
+    '  ],\n'
+    '  "matriculas_nao_confrontantes": ["12348"],\n'
+    '  "lotes_sem_matricula": ["lote 12", "lote 15"],\n'
     '  "confrontacao_completa": true|false|null,\n'
     '  "proprietarios_identificados": {"12345": ["Nome"], "12346": ["Nome2"]},\n'
     '  "confidence": 0.0-1.0,\n'
     '  "reasoning": "explicação detalhada da análise"\n'
-    "}"
+    "}\n\n"
+    "TIPOS DE CONFRONTANTES:\n"
+    "- 'lote': lotes numerados (ex: lote 11, lote 15)\n"
+    "- 'matrícula': matrículas identificadas por número\n"
+    "- 'pessoa': nomes de pessoas proprietárias\n"
+    "- 'via_publica': ruas, avenidas, praças\n"
+    "- 'estado': Estado, Município, União\n"
+    "- 'outros': córregos, rios, outros elementos\n\n"
+    "INSTRUÇÕES ESPECIAIS:\n"
+    "- Em 'lotes_confrontantes': liste TODOS os confrontantes com tipo e direção\n"
+    "- Em 'matriculas_nao_confrontantes': matrículas anexadas que NÃO são confrontantes da principal\n"
+    "- Em 'lotes_sem_matricula': lotes confrontantes mencionados sem matrícula anexada"
 )
 
 PARTIAL_PROMPT = (
@@ -905,6 +944,9 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
                 "matriculas_encontradas": [],
                 "matricula_principal": None,
                 "matriculas_confrontantes": [],
+                "lotes_confrontantes": [],
+                "matriculas_nao_confrontantes": [],
+                "lotes_sem_matricula": [],
                 "confrontacao_completa": None,
                 "proprietarios_identificados": {},
                 "confidence": None,
@@ -926,11 +968,26 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
                 )
                 matriculas_obj.append(matricula)
 
+        # Processa lotes confrontantes
+        lotes_confrontantes_obj = []
+        for lote_data in parsed.get("lotes_confrontantes", []):
+            if isinstance(lote_data, dict):
+                lote_confronta = LoteConfronta(
+                    identificador=lote_data.get("identificador", ""),
+                    tipo=lote_data.get("tipo", "outros"),
+                    matricula_anexada=lote_data.get("matricula_anexada"),
+                    direcao=lote_data.get("direcao")
+                )
+                lotes_confrontantes_obj.append(lote_confronta)
+
         return AnalysisResult(
             arquivo=fname_placeholder,
             matriculas_encontradas=matriculas_obj,
             matricula_principal=parsed.get("matricula_principal"),
             matriculas_confrontantes=parsed.get("matriculas_confrontantes", []),
+            lotes_confrontantes=lotes_confrontantes_obj,
+            matriculas_nao_confrontantes=parsed.get("matriculas_nao_confrontantes", []),
+            lotes_sem_matricula=parsed.get("lotes_sem_matricula", []),
             confrontacao_completa=parsed.get("confrontacao_completa"),
             proprietarios_identificados=parsed.get("proprietarios_identificados", {}),
             confidence=parsed.get("confidence"),
@@ -945,6 +1002,9 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             matriculas_encontradas=[],
             matricula_principal=None,
             matriculas_confrontantes=[],
+            lotes_confrontantes=[],
+            matriculas_nao_confrontantes=[],
+            lotes_sem_matricula=[],
             confrontacao_completa=None,
             proprietarios_identificados={},
             confidence=None,
@@ -967,6 +1027,9 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
             matriculas_encontradas=[],
             matricula_principal=None,
             matriculas_confrontantes=[],
+            lotes_confrontantes=[],
+            matriculas_nao_confrontantes=[],
+            lotes_sem_matricula=[],
             confrontacao_completa=None,
             proprietarios_identificados={},
             confidence=None,
@@ -996,6 +1059,9 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
                 "matriculas_encontradas": [],
                 "matricula_principal": None,
                 "matriculas_confrontantes": [],
+                "lotes_confrontantes": [],
+                "matriculas_nao_confrontantes": [],
+                "lotes_sem_matricula": [],
                 "confrontacao_completa": None,
                 "proprietarios_identificados": {},
                 "confidence": None,
@@ -1007,6 +1073,9 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
                 "matriculas_encontradas": [],
                 "matricula_principal": None,
                 "matriculas_confrontantes": [],
+                "lotes_confrontantes": [],
+                "matriculas_nao_confrontantes": [],
+                "lotes_sem_matricula": [],
                 "confrontacao_completa": None,
                 "proprietarios_identificados": {},
                 "confidence": None,
@@ -1033,6 +1102,9 @@ def analyze_text_with_llm(model: str, full_text: str) -> AnalysisResult:
             matriculas_encontradas=matriculas_obj,
             matricula_principal=parsed.get("matricula_principal"),
             matriculas_confrontantes=parsed.get("matriculas_confrontantes", []),
+            lotes_confrontantes=[],  # TODO: implementar processamento de lotes para texto
+            matriculas_nao_confrontantes=parsed.get("matriculas_nao_confrontantes", []),
+            lotes_sem_matricula=parsed.get("lotes_sem_matricula", []),
             confrontacao_completa=parsed.get("confrontacao_completa"),
             proprietarios_identificados=parsed.get("proprietarios_identificados", {}),
             confidence=parsed.get("confidence"),
@@ -1560,23 +1632,21 @@ class App(tk.Tk):
         self.after(100, self.poll_queue)
 
     def populate_results_tree(self, result):
-        """Popula a tabela com estrutura hierárquica: principal + confrontantes"""
+        """Popula a tabela com estrutura hierárquica: principal + confrontantes + não confrontantes"""
         # Limpa resultados anteriores para este arquivo
         for item in self.tree_results.get_children():
             self.tree_results.delete(item)
         
-        if not result or not result.matricula_principal:
+        if not result:
             return
         
         # Encontra a matrícula principal nos dados
         matricula_principal_obj = None
-        for mat in result.matriculas_encontradas:
-            if mat.numero == result.matricula_principal:
-                matricula_principal_obj = mat
-                break
-        
-        if not matricula_principal_obj:
-            return
+        if result.matricula_principal:
+            for mat in result.matriculas_encontradas:
+                if mat.numero == result.matricula_principal:
+                    matricula_principal_obj = mat
+                    break
         
         estado_ms = "SIM" if result.matriculas_confrontantes and any("Estado" in str(conf) or "MS" in str(conf) for conf in result.matriculas_confrontantes) else "NÃO"
         
@@ -1670,6 +1740,61 @@ class App(tk.Tk):
                     "",  # Estado MS só na principal
                     ""   # Confiança só na principal
                 ))
+
+        # Insere matrículas NÃO confrontantes (se houver)
+        for mat_num in result.matriculas_nao_confrontantes:
+            # Encontra dados da matrícula não confrontante
+            nao_confrontante_obj = None
+            for mat in result.matriculas_encontradas:
+                if mat.numero == mat_num:
+                    nao_confrontante_obj = mat
+                    break
+            
+            proprietarios_nao_confrontante = nao_confrontante_obj.proprietarios if nao_confrontante_obj else ["N/A"]
+            if not proprietarios_nao_confrontante:
+                proprietarios_nao_confrontante = ["N/A"]
+            
+            # Formata informação de lote/quadra
+            lote_quadra_nao_confrontante = ""
+            if nao_confrontante_obj and (nao_confrontante_obj.lote or nao_confrontante_obj.quadra):
+                lote_parts = []
+                if nao_confrontante_obj.lote:
+                    lote_parts.append(f"Lote {nao_confrontante_obj.lote}")
+                if nao_confrontante_obj.quadra:
+                    lote_parts.append(f"Quadra {nao_confrontante_obj.quadra}")
+                lote_quadra_nao_confrontante = " / ".join(lote_parts)
+            
+            # Primeira linha da matrícula não confrontante
+            nao_conf_id = self.tree_results.insert(principal_id, "end", text="  ⚬", values=(
+                mat_num,
+                lote_quadra_nao_confrontante,
+                "Não Confrontante",
+                proprietarios_nao_confrontante[0],
+                "",  # Estado MS só na principal
+                ""   # Confiança só na principal
+            ))
+            
+            # Linhas adicionais para outros proprietários
+            for proprietario in proprietarios_nao_confrontante[1:]:
+                self.tree_results.insert(nao_conf_id, "end", text="", values=(
+                    "",  # Matrícula vazia
+                    "",  # Lote/Quadra vazio
+                    "",  # Tipo vazio
+                    proprietario,
+                    "",  # Estado MS só na principal
+                    ""   # Confiança só na principal
+                ))
+
+        # Insere lotes confrontantes sem matrícula anexada
+        for lote_sem_mat in result.lotes_sem_matricula:
+            self.tree_results.insert(principal_id, "end", text="  ⚠", values=(
+                "FALTANTE",
+                lote_sem_mat,
+                "Falta Matrícula",
+                "Matrícula não anexada",
+                "",  # Estado MS só na principal
+                ""   # Confiança só na principal
+            ))
         
         # Expande automaticamente a árvore
         self.tree_results.item(principal_id, open=True)
@@ -1683,15 +1808,27 @@ class App(tk.Tk):
         """Configura estilos visuais para a tabela hierárquica"""
         # Configura tags para diferentes tipos de linha
         self.tree_results.tag_configure("principal", background="#E8F4FD", font=("TkDefaultFont", 9, "bold"))
-        self.tree_results.tag_configure("confrontante", background="#F8F8F8")
+        self.tree_results.tag_configure("confrontante", background="#F0F8F0")  # Verde claro
+        self.tree_results.tag_configure("nao_confrontante", background="#FFF8F0")  # Laranja claro
+        self.tree_results.tag_configure("faltante", background="#FFF0F0")  # Vermelho claro
         
         # Aplica tags aos itens
         for item in self.tree_results.get_children():
             # Item principal
             self.tree_results.item(item, tags=("principal",))
-            # Itens confrontantes (filhos)
+            # Itens filhos (confrontantes, não confrontantes, faltantes)
             for child in self.tree_results.get_children(item):
-                self.tree_results.item(child, tags=("confrontante",))
+                child_values = self.tree_results.item(child, "values")
+                if len(child_values) > 2:
+                    tipo = child_values[2]  # coluna "Tipo"
+                    if tipo == "Confrontante":
+                        self.tree_results.item(child, tags=("confrontante",))
+                    elif tipo == "Não Confrontante":
+                        self.tree_results.item(child, tags=("nao_confrontante",))
+                    elif tipo == "Falta Matrícula":
+                        self.tree_results.item(child, tags=("faltante",))
+                    else:
+                        self.tree_results.item(child, tags=("confrontante",))  # padrão
 
     def update_summary(self, result):
         """Atualiza o campo de resumo com o reasoning do modelo"""
