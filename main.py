@@ -1006,9 +1006,27 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             "- Extraia lote/quadra de cada matrícula\n"
             "\n"
             "IMPORTANTE: LEIA com atenção todo o texto visível, incluindo tabelas, carimbos e anotações.\n"
-            "Responda em JSON seguindo exatamente este formato:\n\n" +
-            AGGREGATE_PROMPT.split("Responda em JSON com este esquema:\n")[1]
+            "Responda em JSON seguindo exatamente este formato:\n\n"
         )
+        
+        # Extrai o esquema JSON do AGGREGATE_PROMPT de forma segura
+        try:
+            if "Responda em JSON com este esquema:\n" in AGGREGATE_PROMPT:
+                schema_part = AGGREGATE_PROMPT.split("Responda em JSON com este esquema:\n")[1]
+            elif "Responda em JSON com este esquema EXPANDIDO:\n" in AGGREGATE_PROMPT:
+                schema_part = AGGREGATE_PROMPT.split("Responda em JSON com este esquema EXPANDIDO:\n")[1]
+            elif "Responda em JSON" in AGGREGATE_PROMPT:
+                schema_part = AGGREGATE_PROMPT.split("Responda em JSON")[1].split(":\n")[1] if ":\n" in AGGREGATE_PROMPT.split("Responda em JSON")[1] else AGGREGATE_PROMPT.split("Responda em JSON")[1]
+            else:
+                schema_part = "{\n  \"matriculas_encontradas\": [],\n  \"matricula_principal\": null,\n  \"confrontacao_completa\": false\n}"
+                
+            vision_prompt += schema_part
+            print(f"✅ Schema JSON extraído com sucesso ({len(schema_part)} chars)")
+            
+        except Exception as schema_error:
+            print(f"⚠️ Erro ao extrair schema JSON: {schema_error}")
+            fallback_schema = "{\n  \"matriculas_encontradas\": [],\n  \"matricula_principal\": null,\n  \"confrontacao_completa\": false\n}"
+            vision_prompt += fallback_schema
         
         # Chama API com visão
         print(f"🚀 Enviando {len(images_b64)} imagem(ns) para {model}...")
@@ -1147,6 +1165,17 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         )
         
     except Exception as e:
+        # CAPTURE O ERRO E MOSTRE LOGS DETALHADOS ANTES DE RETORNAR
+        print(f"🚨 CAPTURADO ERRO GERAL na análise visual!")
+        print(f"❌ Tipo do erro: {type(e).__name__}")
+        print(f"❌ Mensagem do erro: {str(e)}")
+        print(f"❌ Arquivo sendo processado: {fname_placeholder}")
+        
+        # Traceback detalhado
+        import traceback
+        print(f"📍 Traceback completo:")
+        traceback.print_exc()
+        
         # Se análise visual falhar, retorna erro estruturado
         return AnalysisResult(
             arquivo=fname_placeholder,
