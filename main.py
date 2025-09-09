@@ -1662,39 +1662,53 @@ class App(tk.Tk):
             confianca = "N/A"
         
         # Insere matrícula principal - cada proprietário em linha separada
-        proprietarios_principal = matricula_principal_obj.proprietarios
-        if not proprietarios_principal:
-            proprietarios_principal = ["N/A"]
-        
-        # Formata informação de lote/quadra da matrícula principal
+        proprietarios_principal = ["N/A"]  # Valor padrão
         lote_quadra_principal = ""
-        if matricula_principal_obj.lote or matricula_principal_obj.quadra:
-            lote_parts = []
-            if matricula_principal_obj.lote:
-                lote_parts.append(f"Lote {matricula_principal_obj.lote}")
-            if matricula_principal_obj.quadra:
-                lote_parts.append(f"Quadra {matricula_principal_obj.quadra}")
-            lote_quadra_principal = " / ".join(lote_parts)
         
-        # Primeira linha da matrícula principal (com o primeiro proprietário)
-        principal_id = self.tree_results.insert("", "end", text="🏠", values=(
-            result.matricula_principal,
-            lote_quadra_principal,
-            "Principal",
-            proprietarios_principal[0],
-            estado_ms,
-            confianca
-        ))
+        if matricula_principal_obj:
+            proprietarios_principal = matricula_principal_obj.proprietarios
+            if not proprietarios_principal:
+                proprietarios_principal = ["N/A"]
+            
+            # Formata informação de lote/quadra da matrícula principal
+            if matricula_principal_obj.lote or matricula_principal_obj.quadra:
+                lote_parts = []
+                if matricula_principal_obj.lote:
+                    lote_parts.append(f"Lote {matricula_principal_obj.lote}")
+                if matricula_principal_obj.quadra:
+                    lote_parts.append(f"Quadra {matricula_principal_obj.quadra}")
+                lote_quadra_principal = " / ".join(lote_parts)
         
-        # Linhas adicionais para outros proprietários da matrícula principal
-        for i, proprietario in enumerate(proprietarios_principal[1:], 1):
-            self.tree_results.insert(principal_id, "end", text="", values=(
-                "",  # Matrícula vazia nas linhas de proprietários adicionais
-                "",  # Lote/Quadra vazio
-                "",  # Tipo vazio
-                proprietario,
-                "",  # Estado MS só na primeira linha
-                ""   # Confiança só na primeira linha
+        if matricula_principal_obj:
+            # Primeira linha da matrícula principal (com o primeiro proprietário)
+            principal_id = self.tree_results.insert("", "end", text="🏠", values=(
+                result.matricula_principal,
+                lote_quadra_principal,
+                "Principal",
+                proprietarios_principal[0],
+                estado_ms,
+                confianca
+            ))
+            
+            # Linhas adicionais para outros proprietários da matrícula principal
+            for i, proprietario in enumerate(proprietarios_principal[1:], 1):
+                self.tree_results.insert(principal_id, "end", text="", values=(
+                    "",  # Matrícula vazia nas linhas de proprietários adicionais
+                    "",  # Lote/Quadra vazio
+                    "",  # Tipo vazio
+                    proprietario,
+                    "",  # Estado MS só na primeira linha
+                    ""   # Confiança só na primeira linha
+                ))
+        else:
+            # Se não há matrícula principal identificada, mostra informação geral
+            principal_id = self.tree_results.insert("", "end", text="📄", values=(
+                result.matricula_principal or "Não identificada",
+                "",
+                "Documento",
+                f"{len(result.matriculas_encontradas)} matrícula(s) encontrada(s)",
+                estado_ms,
+                confianca
             ))
         
         # Insere matrículas confrontantes como filhas
