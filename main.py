@@ -1418,10 +1418,15 @@ class App(tk.Tk):
             try:
                 self.queue.put(("log", f"📄 Processando {filename} ({idx}/{len(self.files)})"))
                 
-                # Verifica se o arquivo existe
+                # Verifica se o arquivo existe e diagnostica problemas
                 if not os.path.exists(path):
                     self.queue.put(("log", f"❌ Arquivo não encontrado: {filename}"))
                     continue
+                
+                # Diagnóstico do arquivo
+                diagnostico = self.diagnose_file_issues(path)
+                if "❌" in diagnostico or "⚠️" in diagnostico:
+                    self.queue.put(("log", f"🔍 Diagnóstico: {diagnostico}"))
                 
                 # Análise visual direta com IA
                 self.queue.put(("log", f"👁️ Analisando documento visualmente com IA..."))
@@ -1438,7 +1443,10 @@ class App(tk.Tk):
 
                 # Log dos resultados principais
                 if res.reasoning and "Erro na análise visual" in res.reasoning:
-                    self.queue.put(("log", f"⚠️ Problema na análise visual - verifique se o arquivo é legível"))
+                    # Extrai mais detalhes do erro
+                    erro_detalhes = res.reasoning.split("Erro na análise visual: ")[-1][:100]
+                    self.queue.put(("log", f"⚠️ Problema na análise visual: {erro_detalhes}"))
+                    self.queue.put(("log", f"💡 Possíveis causas: arquivo muito grande, ilegível ou formato não suportado"))
                 elif res.matriculas_encontradas:
                     self.queue.put(("log", f"📋 {len(res.matriculas_encontradas)} matrícula(s) identificada(s) visualmente"))
                     if res.matricula_principal:
@@ -1474,7 +1482,14 @@ class App(tk.Tk):
                 if not proprietarios_texto:
                     proprietarios_texto = "Não identificados"
 
-                self.queue.put(("log", f"✅ Análise de {filename} concluída com sucesso (confiança: {confianca_pct})"))
+                # Mensagem de conclusão baseada no status
+                if res.reasoning and "Erro na análise visual" in res.reasoning:
+                    self.queue.put(("log", f"⚠️ Análise de {filename} concluída com problemas (confiança: {confianca_pct})"))
+                elif res.matriculas_encontradas:
+                    self.queue.put(("log", f"✅ Análise de {filename} concluída com sucesso (confiança: {confianca_pct})"))
+                else:
+                    self.queue.put(("log", f"ℹ️ Análise de {filename} concluída - nenhuma matrícula identificada (confiança: {confianca_pct})"))
+                
                 self.queue.put(("result", (path, res)))
                 
             except Exception as e:
@@ -1930,9 +1945,51 @@ class App(tk.Tk):
             "Este sistema usa análise visual direta dos documentos.\n"
             "Certifique-se de usar um modelo que suporte imagens.\n\n"
             "Claude 3.5 Sonnet é altamente recomendado para\n"
-            "análise precisa de documentos jurídicos."
+            "análise precisa de documentos jurídicos.\n\n"
+            "SOLUÇÃO DE PROBLEMAS:\n"
+            "• Arquivo muito grande: Limite de 30 páginas\n"
+            "• Imagem ilegível: Use PDFs com texto ou OCR melhor\n"
+            "• Erro de API: Verifique chave OPENROUTER_API_KEY"
         )
         messagebox.showinfo("Modelos com Suporte a Visão", info)
+    
+    def diagnose_file_issues(self, file_path: str) -> str:
+        """Diagnostica problemas comuns com arquivos"""
+        issues = []
+        
+        try:
+            # Verifica se arquivo existe
+            if not os.path.exists(file_path):
+                issues.append("❌ Arquivo não encontrado")
+                return "; ".join(issues)
+            
+            # Verifica tamanho do arquivo
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size_mb > 50:
+                issues.append(f"⚠️ Arquivo muito grande ({file_size_mb:.1f}MB)")
+            
+            # Verifica extensão
+            ext = os.path.splitext(file_path.lower())[1]
+            if ext == ".pdf":
+                # Verifica número de páginas
+                try:
+                    page_count = get_pdf_page_count(file_path)
+                    if page_count > 30:
+                        issues.append(f"⚠️ PDF com {page_count} páginas (limite: 30)")
+                    elif page_count == 0:
+                        issues.append("❌ PDF corrompido ou vazio")
+                except:
+                    issues.append("❌ Erro ao ler PDF")
+            elif ext not in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]:
+                issues.append(f"❌ Formato não suportado: {ext}")
+            
+            if not issues:
+                issues.append("✅ Arquivo parece estar OK")
+                
+        except Exception as e:
+            issues.append(f"❌ Erro ao analisar arquivo: {str(e)[:50]}")
+        
+        return "; ".join(issues)
 
     def log(self, msg: str):
         self.txt_log.insert("end", msg + "\n")
