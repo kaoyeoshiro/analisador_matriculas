@@ -23,6 +23,7 @@ except Exception:
 # --- HTTP & env ---
 import requests
 from dotenv import load_dotenv
+from datetime import datetime
 
 # --- Plotting & Visualization ---
 import matplotlib.pyplot as plt
@@ -44,6 +45,17 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 load_dotenv()
 DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
+# Configuração do Google Forms para Feedback
+GOOGLE_FORM_CONFIG = {
+    "url": "https://docs.google.com/forms/d/e/1FAIpQLSf_EXEMPLO_ID_DO_FORMULARIO/formResponse",
+    "fields": {
+        "resultado": "entry.123456789",      # Substituir pelo ID real do campo
+        "descricao": "entry.987654321",      # Substituir pelo ID real do campo  
+        "timestamp": "entry.555666777",      # Substituir pelo ID real do campo
+        "dados_tecnicos": "entry.444333222"  # Substituir pelo ID real do campo
+    }
+}
 
 # =========================
 # Estruturas
@@ -1526,7 +1538,182 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
     )
 
 # =========================
-# GUI
+# Sistema de Feedback
+# =========================
+class FeedbackManager:
+    """Gerencia o envio de feedback para Google Forms + Sheets"""
+    
+    def __init__(self):
+        self.feedback_pendente = []
+        
+    def solicitar_feedback(self, parent, dados_geracao):
+        """Mostra dialog de feedback após uma geração"""
+        dialog = FeedbackDialog(parent, dados_geracao, self.enviar_feedback)
+        
+    def enviar_feedback(self, feedback_data):
+        """Envia feedback para Google Forms"""
+        thread = threading.Thread(
+            target=self._enviar_feedback_async,
+            args=(feedback_data,),
+            daemon=True
+        )
+        thread.start()
+        
+    def _enviar_feedback_async(self, feedback_data):
+        """Envio assíncrono para não travar a interface"""
+        try:
+            # Preparar dados para o Google Forms
+            form_data = {
+                GOOGLE_FORM_CONFIG["fields"]["resultado"]: feedback_data["resultado"],
+                GOOGLE_FORM_CONFIG["fields"]["descricao"]: feedback_data.get("descricao", ""),
+                GOOGLE_FORM_CONFIG["fields"]["timestamp"]: feedback_data["timestamp"],
+                GOOGLE_FORM_CONFIG["fields"]["dados_tecnicos"]: json.dumps(feedback_data["dados_tecnicos"], ensure_ascii=False)
+            }
+            
+            # Enviar para Google Forms
+            response = requests.post(
+                GOOGLE_FORM_CONFIG["url"],
+                data=form_data,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                print("✅ Feedback enviado com sucesso!")
+            else:
+                print(f"⚠️ Erro ao enviar feedback: {response.status_code}")
+                self._salvar_feedback_local(feedback_data)
+                
+        except Exception as e:
+            print(f"❌ Erro de conexão: {e}")
+            self._salvar_feedback_local(feedback_data)
+            
+    def _salvar_feedback_local(self, feedback_data):
+        """Salva feedback localmente se não conseguir enviar"""
+        try:
+            with open("feedback_pendente.json", "a", encoding="utf-8") as f:
+                f.write(json.dumps(feedback_data, ensure_ascii=False) + "\n")
+            print("💾 Feedback salvo localmente para envio posterior")
+        except Exception as e:
+            print(f"Erro ao salvar feedback local: {e}")
+
+class FeedbackDialog(tk.Toplevel):
+    """Dialog para coleta de feedback do usuário"""
+    
+    def __init__(self, parent, dados_geracao, callback_envio):
+        super().__init__(parent)
+        self.callback_envio = callback_envio
+        self.dados_geracao = dados_geracao
+        self.resultado = None
+        
+        self.configurar_janela()
+        self.criar_interface()
+        self.centralizar_janela()
+        
+    def configurar_janela(self):
+        self.title("Feedback - Resultado da Geração")
+        self.geometry("500x450")
+        self.resizable(False, False)
+        self.transient(self.master)
+        self.grab_set()
+        
+    def criar_interface(self):
+        # Frame principal
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(fill="both", expand=True)
+        
+        # Título
+        titulo = ttk.Label(
+            main_frame,
+            text="O sistema identificou corretamente as confrontações?",
+            font=("Arial", 12, "bold")
+        )
+        titulo.pack(pady=(0, 20))
+        
+        # Opções de resultado
+        self.var_resultado = tk.StringVar(value="acertou")
+        
+        frame_opcoes = ttk.LabelFrame(main_frame, text="Resultado", padding="10")
+        frame_opcoes.pack(fill="x", pady=(0, 20))
+        
+        ttk.Radiobutton(
+            frame_opcoes,
+            text="✅ Acertou - As confrontações estão corretas",
+            variable=self.var_resultado,
+            value="acertou"
+        ).pack(anchor="w", pady=2)
+        
+        ttk.Radiobutton(
+            frame_opcoes,
+            text="❌ Errou - Há problemas nas confrontações",
+            variable=self.var_resultado,
+            value="errou"
+        ).pack(anchor="w", pady=2)
+        
+        # Campo de descrição do erro
+        frame_descricao = ttk.LabelFrame(main_frame, text="Se errou, descreva o problema (opcional)", padding="10")
+        frame_descricao.pack(fill="both", expand=True, pady=(0, 20))
+        
+        # Frame para texto e scrollbar
+        text_frame = ttk.Frame(frame_descricao)
+        text_frame.pack(fill="both", expand=True)
+        
+        self.txt_descricao = tk.Text(
+            text_frame,
+            height=6,
+            wrap="word",
+            font=("Arial", 10)
+        )
+        self.txt_descricao.pack(side="left", fill="both", expand=True)
+        
+        # Scrollbar para o texto
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=self.txt_descricao.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.txt_descricao.config(yscrollcommand=scrollbar.set)
+        
+        # Botões
+        frame_botoes = ttk.Frame(main_frame)
+        frame_botoes.pack(fill="x", pady=(10, 0))
+        
+        ttk.Button(
+            frame_botoes,
+            text="📤 Enviar Feedback",
+            command=self.enviar_feedback
+        ).pack(side="right", padx=(10, 0))
+        
+        ttk.Button(
+            frame_botoes,
+            text="⏭️ Pular",
+            command=self.pular_feedback
+        ).pack(side="right")
+        
+    def centralizar_janela(self):
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() // 2) - (self.winfo_width() // 2)
+        y = (self.winfo_screenheight() // 2) - (self.winfo_height() // 2)
+        self.geometry(f"+{x}+{y}")
+        
+    def enviar_feedback(self):
+        feedback_data = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "resultado": self.var_resultado.get(),
+            "descricao": self.txt_descricao.get("1.0", "end-1c").strip(),
+            "dados_tecnicos": {
+                "arquivo_processado": self.dados_geracao.get("arquivo", ""),
+                "confrontacoes_encontradas": self.dados_geracao.get("confrontacoes", 0),
+                "tempo_processamento": self.dados_geracao.get("tempo", 0),
+                "planta_gerada": self.dados_geracao.get("planta_gerada", False),
+                "modelo_ia_usado": self.dados_geracao.get("modelo", DEFAULT_MODEL)
+            }
+        }
+        
+        self.callback_envio(feedback_data)
+        self.destroy()
+        
+    def pular_feedback(self):
+        self.destroy()
+
+# =========================
+# GUI Principal
 # =========================
 class App(tk.Tk):
     def __init__(self):
@@ -1538,6 +1725,9 @@ class App(tk.Tk):
         self.files: List[str] = []
         self.results: Dict[str, AnalysisResult] = {}
         self.queue = queue.Queue()
+        
+        # Sistema de Feedback
+        self.feedback_manager = FeedbackManager()
 
         self.create_widgets()
         self.poll_queue()
@@ -1965,9 +2155,49 @@ class App(tk.Tk):
                 elif kind == "progress":
                     val = self.progress["value"] + payload
                     self.progress["value"] = val
+                    # Verifica se o processamento foi concluído
+                    if val >= self.progress["maximum"] and val > 0:
+                        self.solicitar_feedback_processamento()
         except queue.Empty:
             pass
         self.after(100, self.poll_queue)
+
+    def solicitar_feedback_processamento(self):
+        """Solicita feedback após completar o processamento de todos os arquivos"""
+        if not self.results:
+            return  # Sem resultados para avaliar
+            
+        # Coleta dados sobre o processamento
+        total_matriculas = sum(len(result.matriculas_encontradas) for result in self.results.values())
+        arquivos_processados = len(self.results)
+        confrontacoes_identificadas = sum(len(result.matriculas_confrontantes) for result in self.results.values())
+        
+        dados_geracao = {
+            "arquivo": f"{arquivos_processados} arquivo(s) processado(s)",
+            "confrontacoes": confrontacoes_identificadas,
+            "tempo": 0,  # Tempo será calculado posteriormente se necessário
+            "planta_gerada": False,
+            "modelo": self.model_var.get(),
+            "matriculas_encontradas": total_matriculas
+        }
+        
+        # Agenda feedback para depois da interface ser atualizada
+        self.after(2000, lambda: self.feedback_manager.solicitar_feedback(self, dados_geracao))
+
+    def solicitar_feedback_planta(self, matricula: MatriculaInfo):
+        """Solicita feedback após geração de planta"""
+        dados_geracao = {
+            "arquivo": f"Matrícula {matricula.numero}",
+            "confrontacoes": len(matricula.lotes_confrontantes) if matricula.lotes_confrontantes else 0,
+            "tempo": 0,
+            "planta_gerada": True,
+            "modelo": self.model_var.get(),
+            "lote": matricula.lote,
+            "quadra": matricula.quadra
+        }
+        
+        # Agenda feedback para depois da planta ser exibida
+        self.after(3000, lambda: self.feedback_manager.solicitar_feedback(self, dados_geracao))
 
     def populate_results_tree(self, result):
         """Popula a tabela com estrutura hierárquica: principal + confrontantes + não confrontantes"""
@@ -2645,6 +2875,9 @@ RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, 
             
             plt.close(fig)  # Limpa a figura da memória
             print(f"✅ Planta gerada com sucesso usando matplotlib")
+            
+            # Solicita feedback para geração de planta
+            self.solicitar_feedback_planta(matricula)
             
             return data_url
             
