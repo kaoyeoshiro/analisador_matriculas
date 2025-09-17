@@ -10,6 +10,12 @@ datas = [('VERSION', '.')]  # Arquivo VERSION é obrigatório
 if os.path.exists('.env'):
     datas.append(('.env', '.'))
 
+# Adiciona arquivos de documentação do feedback
+if os.path.exists('.env.example'):
+    datas.append(('.env.example', '.'))
+if os.path.exists('FEEDBACK_SETUP.md'):
+    datas.append(('FEEDBACK_SETUP.md', '.'))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -43,7 +49,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

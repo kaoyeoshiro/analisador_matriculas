@@ -274,6 +274,47 @@ class AutoUpdater:
                 downloaded_file_short = f'"{downloaded_file}"'
                 version_file_short = f'"{os.path.join(self.app_dir, "VERSION")}"'
 
+            # Usa caminhos curtos também no PowerShell
+            try:
+                import ctypes
+                from ctypes import wintypes
+                def get_short_path_ps(path):
+                    try:
+                        _GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+                        _GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+                        _GetShortPathNameW.restype = wintypes.DWORD
+                        output_buf = ctypes.create_unicode_buffer(260)
+                        result = _GetShortPathNameW(path, output_buf, 260)
+                        if result:
+                            return output_buf.value
+                    except:
+                        pass
+                    return path
+
+                current_exe_ps = get_short_path_ps(current_exe)
+                downloaded_file_ps = get_short_path_ps(downloaded_file)
+                version_file_ps = get_short_path_ps(os.path.join(self.app_dir, 'VERSION'))
+            except:
+                current_exe_ps = current_exe
+                downloaded_file_ps = downloaded_file
+                version_file_ps = os.path.join(self.app_dir, 'VERSION')
+
+            self._log(f"PowerShell - Original: {current_exe}")
+            self._log(f"PowerShell - Curto: {current_exe_ps}")
+
+            # Escapa aspas duplas e usa caminhos literais
+            def escape_path_for_powershell(path):
+                # Escapa aspas duplas e usa aspas simples para envolver
+                return f"'{path}'"
+
+            downloaded_safe = escape_path_for_powershell(downloaded_file)
+            current_safe = escape_path_for_powershell(current_exe)
+            version_safe = escape_path_for_powershell(os.path.join(self.app_dir, 'VERSION'))
+
+            self._log(f"PowerShell paths:")
+            self._log(f"  Downloaded: {downloaded_safe}")
+            self._log(f"  Current: {current_safe}")
+
             # Cria script PowerShell mais robusto (funciona melhor com caminhos)
             powershell_content = f"""
 # Auto-update script
@@ -282,60 +323,73 @@ $ErrorActionPreference = "Stop"
 Write-Host "Aplicando atualizacao..."
 Start-Sleep -Seconds 2
 
-$downloadedFile = "{downloaded_file}"
-$currentExe = "{current_exe}"
-$versionFile = "{os.path.join(self.app_dir, 'VERSION')}"
+$downloadedFile = {downloaded_safe}
+$currentExe = {current_safe}
+$versionFile = {version_safe}
 $newVersion = "{update_info['version']}"
 
 Write-Host "Verificando arquivos..."
+Write-Host "Arquivo baixado: $downloadedFile"
+Write-Host "Executavel atual: $currentExe"
 
-if (-not (Test-Path $downloadedFile)) {{
+# Verifica se os arquivos existem
+$downloadExists = Test-Path -LiteralPath $downloadedFile
+$currentExists = Test-Path -LiteralPath $currentExe
+
+Write-Host "Download existe: $downloadExists"
+Write-Host "Current existe: $currentExists"
+
+if (-not $downloadExists) {{
     Write-Host "ERRO: Arquivo de atualizacao nao encontrado"
-    Write-Host "Caminho: $downloadedFile"
+    Write-Host "Caminho testado: $downloadedFile"
     Read-Host "Pressione Enter para continuar"
     exit 1
 }}
 
-if (-not (Test-Path $currentExe)) {{
+if (-not $currentExists) {{
     Write-Host "ERRO: Executavel atual nao encontrado"
-    Write-Host "Caminho: $currentExe"
+    Write-Host "Caminho testado: $currentExe"
+    Write-Host "Listando arquivos no diretorio:"
+    Get-ChildItem (Split-Path $currentExe -Parent) | ForEach-Object {{ Write-Host "  $($_.Name)" }}
     Read-Host "Pressione Enter para continuar"
     exit 1
 }}
 
 try {{
     Write-Host "Criando backup..."
-    Copy-Item $currentExe "$currentExe.backup" -Force
+    $backupPath = "$currentExe.backup"
+    Copy-Item -LiteralPath $currentExe -Destination $backupPath -Force
 
     Write-Host "Aplicando nova versao..."
-    Copy-Item $downloadedFile $currentExe -Force
+    Copy-Item -LiteralPath $downloadedFile -Destination $currentExe -Force
 
     Write-Host "Atualizando arquivo de versao..."
-    $newVersion | Out-File -FilePath $versionFile -Encoding UTF8 -NoNewline
+    $newVersion | Out-File -LiteralPath $versionFile -Encoding UTF8 -NoNewline
 
     Write-Host "Limpando arquivos temporarios..."
-    Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
-    Remove-Item "$currentExe.backup" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $downloadedFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
 
     Write-Host "Atualizacao aplicada com sucesso!"
     Write-Host "Reiniciando aplicacao em 3 segundos..."
     Start-Sleep -Seconds 3
 
-    Start-Process $currentExe
+    Start-Process -LiteralPath $currentExe
 
 }} catch {{
     Write-Host "ERRO: $($_.Exception.Message)"
     Write-Host "Restaurando backup..."
-    if (Test-Path "$currentExe.backup") {{
-        Copy-Item "$currentExe.backup" $currentExe -Force
-        Remove-Item "$currentExe.backup" -Force -ErrorAction SilentlyContinue
+    $backupPath = "$currentExe.backup"
+    if (Test-Path -LiteralPath $backupPath) {{
+        Copy-Item -LiteralPath $backupPath -Destination $currentExe -Force
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     }}
     Read-Host "Pressione Enter para continuar"
     exit 1
 }}
 
 Start-Sleep -Seconds 1
-Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 """
 
             # Salva e executa o script PowerShell
@@ -345,13 +399,10 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
 
             self._log("Executando script de atualização...")
 
-            # Executa o PowerShell e sai do aplicativo atual
-            subprocess.Popen([
-                "powershell.exe",
-                "-ExecutionPolicy", "Bypass",
-                "-WindowStyle", "Normal",
-                "-File", ps_file
-            ], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            # PowerShell geralmente tem problemas, vai direto para batch que é mais confiável
+            self._log("🔄 Usando método batch direto (mais confiável que PowerShell)...")
+            self._apply_update_batch(downloaded_file, current_exe, update_info)
+            return True
 
             # Sai do aplicativo atual para permitir substituição
             time.sleep(1)
@@ -359,6 +410,159 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
 
         except Exception as e:
             self._log(f"Erro ao aplicar atualização: {e}")
+            return False
+
+    def _apply_update_batch(self, downloaded_file: str, current_exe: str, update_info: dict):
+        """Método fallback usando batch script"""
+        try:
+            self._log("🔄 Usando método batch para atualização...")
+
+            # Converte caminhos para formato curto (evita problemas com acentos)
+            def get_short_path_name(long_path):
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    _GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+                    _GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+                    _GetShortPathNameW.restype = wintypes.DWORD
+
+                    output_buf = ctypes.create_unicode_buffer(260)
+                    result = _GetShortPathNameW(long_path, output_buf, 260)
+                    if result:
+                        return output_buf.value
+                except:
+                    pass
+                return long_path
+
+            # Usa caminhos curtos para evitar problemas com acentos
+            current_exe_short = get_short_path_name(current_exe)
+            downloaded_file_short = get_short_path_name(downloaded_file)
+            version_file_short = get_short_path_name(os.path.join(self.app_dir, 'VERSION'))
+
+            self._log(f"Caminho original: {current_exe}")
+            self._log(f"Caminho curto: {current_exe_short}")
+
+            # Usa subst para criar drive temporário se necessário
+            # Isso evita problemas com acentos completamente
+            batch_content = f"""@echo off
+setlocal enabledelayedexpansion
+chcp 65001 > nul
+echo Aplicando atualizacao (metodo batch)...
+timeout /t 2 /nobreak > nul
+
+echo Debug: Verificando caminhos originais...
+echo Downloaded original: {downloaded_file}
+echo Current original: {current_exe}
+echo Downloaded short: {downloaded_file_short}
+echo Current short: {current_exe_short}
+
+echo Verificando se arquivos existem...
+if exist "{downloaded_file}" (
+    echo ✓ Arquivo de download encontrado: {downloaded_file}
+) else (
+    echo ❌ Arquivo de download NAO encontrado: {downloaded_file}
+    if exist "{downloaded_file_short}" (
+        echo ✓ Mas versao curta encontrada: {downloaded_file_short}
+        set "DOWNLOAD_FILE={downloaded_file_short}"
+    ) else (
+        echo ❌ Versao curta tambem nao encontrada: {downloaded_file_short}
+        pause
+        exit /b 1
+    )
+)
+
+if exist "{current_exe}" (
+    echo ✓ Executavel atual encontrado: {current_exe}
+    set "CURRENT_EXE={current_exe}"
+) else (
+    echo ❌ Executavel atual NAO encontrado: {current_exe}
+    if exist "{current_exe_short}" (
+        echo ✓ Mas versao curta encontrada: {current_exe_short}
+        set "CURRENT_EXE={current_exe_short}"
+    ) else (
+        echo ❌ Versao curta tambem nao encontrada: {current_exe_short}
+        echo Listando arquivos no diretorio:
+        dir "{os.path.dirname(current_exe)}" /b
+        pause
+        exit /b 1
+    )
+)
+
+echo Aguardando aplicacao fechar...
+timeout /t 3 /nobreak
+
+echo Verificando se processo ainda esta rodando...
+tasklist /FI "IMAGENAME eq RelatorioTJMS.exe" 2>NUL | find /I /N "RelatorioTJMS.exe">NUL
+if "%ERRORLEVEL%"=="0" (
+    echo Tentando fechar processo RelatorioTJMS.exe...
+    taskkill /F /IM RelatorioTJMS.exe >nul 2>&1
+    timeout /t 2 /nobreak
+)
+
+echo Criando backup...
+copy "%CURRENT_EXE%" "%CURRENT_EXE%.backup" > nul 2>&1
+
+echo Aplicando nova versao...
+if not defined DOWNLOAD_FILE set "DOWNLOAD_FILE={downloaded_file}"
+
+REM Tenta copiar 3 vezes com intervalo
+set COPY_SUCCESS=0
+for /L %%i in (1,1,3) do (
+    if !COPY_SUCCESS! equ 0 (
+        echo Tentativa %%i de copia...
+        copy "%DOWNLOAD_FILE%" "%CURRENT_EXE%" /Y >nul 2>&1
+        if !ERRORLEVEL! equ 0 (
+            set COPY_SUCCESS=1
+            echo ✓ Copia bem-sucedida na tentativa %%i
+        ) else (
+            echo ❌ Tentativa %%i falhou, aguardando...
+            timeout /t 2 /nobreak
+        )
+    )
+)
+
+if !COPY_SUCCESS! equ 0 (
+    echo ERRO: Falha ao copiar nova versao apos 3 tentativas
+    echo Restaurando backup...
+    copy "%CURRENT_EXE%.backup" "%CURRENT_EXE%" /Y > nul 2>&1
+    pause
+    exit /b 1
+)
+
+echo Atualizando arquivo de versao...
+echo {update_info['version']} > "{version_file_short}"
+
+echo Limpando arquivos temporarios...
+del "%DOWNLOAD_FILE%" > nul 2>&1
+del "%CURRENT_EXE%.backup" > nul 2>&1
+
+echo Atualizacao aplicada com sucesso!
+echo Reiniciando aplicacao em 3 segundos...
+timeout /t 3 /nobreak
+
+start "" "%CURRENT_EXE%"
+
+timeout /t 1 /nobreak > nul
+del "%~f0"
+"""
+
+            # Salva e executa o script batch
+            batch_file = os.path.join(tempfile.gettempdir(), "update_aplicar.bat")
+            with open(batch_file, 'w', encoding='utf-8', newline='\r\n') as f:
+                f.write(batch_content)
+
+            self._log(f"Executando script batch: {batch_file}")
+
+            # Executa o batch
+            subprocess.Popen([batch_file], creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+            # Aguarda um pouco e depois sai para permitir substituição
+            self._log("Saindo da aplicação para permitir atualização...")
+            time.sleep(2)
+            sys.exit(0)
+
+        except Exception as e:
+            self._log(f"Erro no método batch: {e}")
             return False
 
     def update_if_available(self, progress_callback: Callable[[str, int], None] = None) -> bool:

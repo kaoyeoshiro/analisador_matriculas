@@ -7,7 +7,10 @@
       "Bash(git push:*)",
       "Bash(pyinstaller:*)",
       "Bash(dist/RelatorioTJMS.exe:*)",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd /c:*)"
     ],
     "deny": [],
     "ask": []

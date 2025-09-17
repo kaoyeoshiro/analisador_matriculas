@@ -37,6 +37,7 @@ from tkinter import ttk, filedialog, messagebox
 
 # --- Auto-atualização ---
 from updater import create_updater
+from feedback_system import initialize_feedback_system, get_feedback_system
 
 # =========================u
 # Configuração
@@ -1741,14 +1742,20 @@ class App(tk.Tk):
         self.results: Dict[str, AnalysisResult] = {}
         self.queue = queue.Queue()
 
-        # Sistema de Feedback
-        self.feedback_manager = FeedbackManager()
+        # Sistema de Feedback Inteligente
+        self.feedback_system = initialize_feedback_system(
+            app_version="1.0.0",
+            modelo_llm="claude-3.5-sonnet"
+        )
 
         # Sistema de Auto-atualização
         self.updater = create_updater()
 
         self.create_widgets()
         self.poll_queue()
+
+        # Configura evento de fechamento para feedback
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
         # Inicia verificação de atualizações após 2 segundos
         self.after(2000, self.check_for_updates)
@@ -1805,6 +1812,12 @@ class App(tk.Tk):
         
         self.btn_generate_plant = ttk.Button(top, text="Gerar Planta", command=self.generate_property_plant)
         self.btn_generate_plant.pack(side="left", padx=(8,0))
+
+        self.btn_feedback = ttk.Button(top, text="⚠️ Reportar Erro no Conteúdo", command=self.reportar_erro_feedback, state="disabled")
+        self.btn_feedback.pack(side="left", padx=(8,0))
+
+        # Configura referência no sistema de feedback
+        self.feedback_system.set_feedback_button(self.btn_feedback)
 
         self.btn_update = ttk.Button(top, text="Verificar Atualizações", command=self.manual_check_updates)
         self.btn_update.pack(side="right", padx=(8,0))
@@ -2176,12 +2189,16 @@ class App(tk.Tk):
                     self.update_summary(result)
                     # Atualiza alerta sobre direitos do Estado de MS
                     self.update_estado_alert()
+
+                    # Notifica sistema de feedback sobre sucesso
+                    numero_processo = result.numero_processo if hasattr(result, 'numero_processo') and result.numero_processo else os.path.basename(path)
+                    self.feedback_system.on_relatorio_sucesso(numero_processo)
                 elif kind == "progress":
                     val = self.progress["value"] + payload
                     self.progress["value"] = val
                     # Verifica se o processamento foi concluído
                     if val >= self.progress["maximum"] and val > 0:
-                        self.solicitar_feedback_processamento()
+                        pass  # Feedback automático já gerenciado pelo sistema inteligente
         except queue.Empty:
             pass
         self.after(100, self.poll_queue)
@@ -2206,7 +2223,7 @@ class App(tk.Tk):
         }
         
         # Agenda feedback para depois da interface ser atualizada
-        self.after(2000, lambda: self.feedback_manager.solicitar_feedback(self, dados_geracao))
+        pass  # Feedback automático gerenciado pelo sistema inteligente
 
     def solicitar_feedback_planta(self, matricula: MatriculaInfo):
         """Solicita feedback após geração de planta"""
@@ -2221,7 +2238,7 @@ class App(tk.Tk):
         }
 
         # Agenda feedback para depois da planta ser exibida
-        self.after(3000, lambda: self.feedback_manager.solicitar_feedback(self, dados_geracao))
+        pass  # Feedback automático gerenciado pelo sistema inteligente
 
     def check_for_updates(self):
         """Verifica e aplica atualizações automaticamente em background"""
@@ -2238,35 +2255,69 @@ class App(tk.Tk):
         """Verificação manual de atualizações com feedback ao usuário"""
         def update_thread():
             try:
-                update_info = self.updater.check_for_updates()
+                print("🔄 Verificando atualizações manualmente...")
+
+                # Cria updater com silent=False para debug
+                debug_updater = create_updater()
+                debug_updater.silent = False
+
+                update_info = debug_updater.check_for_updates()
+                print(f"📋 Resultado da verificação: {update_info}")
+
                 if update_info:
-                    response = messagebox.askyesno(
-                        "Atualização Disponível",
-                        f"Nova versão {update_info['version']} disponível!\n\n"
-                        "Deseja atualizar agora?",
-                        parent=self
-                    )
-                    if response:
-                        messagebox.showinfo(
-                            "Atualizando",
-                            "O aplicativo será atualizado e reiniciado automaticamente.",
-                            parent=self
-                        )
-                        self.updater.update_if_available()
+                    self.after(0, lambda: self._show_update_dialog(update_info, debug_updater))
                 else:
-                    messagebox.showinfo(
+                    self.after(0, lambda: messagebox.showinfo(
                         "Atualizado",
                         "Você já está usando a versão mais recente!",
                         parent=self
-                    )
+                    ))
             except Exception as e:
-                messagebox.showerror(
+                print(f"❌ Erro na verificação: {e}")
+                import traceback
+                traceback.print_exc()
+                self.after(0, lambda: messagebox.showerror(
                     "Erro de Atualização",
                     f"Erro ao verificar atualizações: {e}",
                     parent=self
-                )
+                ))
 
         threading.Thread(target=update_thread, daemon=True).start()
+
+    def _show_update_dialog(self, update_info, updater):
+        """Mostra o diálogo de atualização na thread principal"""
+        response = messagebox.askyesno(
+            "Atualização Disponível",
+            f"Nova versão {update_info['version']} disponível!\n\n"
+            "Deseja atualizar agora?",
+            parent=self
+        )
+        if response:
+            messagebox.showinfo(
+                "Atualizando",
+                "O aplicativo será atualizado e reiniciado automaticamente.",
+                parent=self
+            )
+            # Executa atualização em thread separada
+            def apply_update():
+                try:
+                    print("🔄 Iniciando processo de atualização...")
+                    updater.update_if_available()
+                except Exception as e:
+                    print(f"❌ Erro na aplicação da atualização: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            threading.Thread(target=apply_update, daemon=True).start()
+
+    def reportar_erro_feedback(self):
+        """Abre diálogo para reportar erro no conteúdo"""
+        self.feedback_system.on_reportar_erro_manual(parent_window=self)
+
+    def _on_closing(self):
+        """Método chamado ao fechar a aplicação - envia feedback automático se necessário"""
+        self.feedback_system.on_fechamento_aplicacao()
+        self.destroy()
 
     def populate_results_tree(self, result):
         """Popula a tabela com estrutura hierárquica: principal + confrontantes + não confrontantes"""
@@ -3037,7 +3088,7 @@ RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, 
             print(f"✅ Planta gerada com sucesso usando matplotlib")
             
             # Solicita feedback para geração de planta
-            self.solicitar_feedback_planta(matricula)
+            pass  # Feedback automático gerenciado pelo sistema inteligente
             
             return data_url
             
