@@ -1,14 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Configuração PyInstaller para o sistema de auto-atualização
 
+import os
+
+# Constrói lista de datas condicionalmente
+datas = [('VERSION', '.')]  # Arquivo VERSION é obrigatório
+
+# Adiciona .env apenas se existir
+if os.path.exists('.env'):
+    datas.append(('.env', '.'))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('VERSION', '.'),  # Inclui arquivo VERSION no executável
-        ('.env', '.'),     # Inclui arquivo .env se existir
-    ],
+    datas=datas,
     hiddenimports=[
         'packaging.version',  # Necessário para updater.py
         'requests',
