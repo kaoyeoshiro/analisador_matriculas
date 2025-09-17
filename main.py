@@ -8,6 +8,7 @@ import threading
 import tempfile
 import subprocess
 import base64
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple, Union
 
@@ -27,6 +28,7 @@ from datetime import datetime
 
 # --- Plotting & Visualization ---
 import matplotlib.pyplot as plt
+import math
 import matplotlib.patches as patches
 from matplotlib.patches import Polygon
 import numpy as np
@@ -47,17 +49,32 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Carrega .env
 load_dotenv()
+
+
+def _load_app_version(default="1.0.0"):
+    """Recupera versao do arquivo VERSION ou retorna padrao"""
+    version_file = Path(__file__).with_name("VERSION")
+    try:
+        content = version_file.read_text(encoding="utf-8").strip()
+        return content or default
+    except (OSError, UnicodeDecodeError):
+        return default
+
+
+APP_VERSION = _load_app_version()
+
 DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-pro")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 # Configuração do Google Forms para Feedback
 GOOGLE_FORM_CONFIG = {
-    "url": "https://docs.google.com/forms/d/e/1FAIpQLSf_EXEMPLO_ID_DO_FORMULARIO/formResponse",
+    "url": os.getenv("GOOGLE_FORM_URL", ""),
     "fields": {
-        "resultado": "entry.123456789",      # Substituir pelo ID real do campo
-        "descricao": "entry.987654321",      # Substituir pelo ID real do campo  
-        "timestamp": "entry.555666777",      # Substituir pelo ID real do campo
-        "dados_tecnicos": "entry.444333222"  # Substituir pelo ID real do campo
+        "tipo": os.getenv("GOOGLE_FORM_FIELD_TIPO", ""),
+        "descricao": os.getenv("GOOGLE_FORM_FIELD_DESCRICAO", ""),
+        "modelo": os.getenv("GOOGLE_FORM_FIELD_MODELO", ""),
+        "timestamp": os.getenv("GOOGLE_FORM_FIELD_TIMESTAMP", ""),
+        "versao": os.getenv("GOOGLE_FORM_FIELD_VERSAO", "")
     }
 }
 
@@ -472,326 +489,242 @@ def clean_json_response(content: str) -> str:
 # =========================
 # Prompting
 # =========================
-SYSTEM_PROMPT = (
+
+# Sistema unificado de prompts para análise de matrículas imobiliárias
+UNIFIED_SYSTEM_PROMPT = (
     "Você é um perito ESPECIALISTA em análise de processos de usucapião e matrículas imobiliárias brasileiras. "
-    "Sua responsabilidade é CRÍTICA: a identificação COMPLETA de confrontantes pode determinar o sucesso ou fracasso de um usucapião. "
-    "\n\nMISSÃO VITAL:\n"
-    "🎯 IDENTIFIQUE TODOS os confrontantes da matrícula principal SEM EXCEÇÃO\n"
-    "🎯 TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (uma para cada direção)\n"
-    "🎯 EXTRAIA LITERALMENTE cada nome, matrícula, rua mencionada como confrontante\n"
-    "🎯 ANALISE palavra por palavra a descrição do imóvel principal\n"
-    "🎯 PROCURE confrontantes em TODAS as direções (norte, sul, leste, oeste, nascente, poente, frente, fundos, direita, esquerda)\n"
-    "🎯 SE MENOS DE 4 CONFRONTANTES: releia o texto procurando informações perdidas\n"
-    "\n\nCONSEQUÊNCIAS:\n"
+    "Sua responsabilidade é CRÍTICA: a identificação COMPLETA de confrontantes pode determinar o sucesso ou fracasso de um usucapião.\n\n"
+
+    "🎯 MISSÃO VITAL:\n"
+    "• IDENTIFIQUE TODOS os confrontantes da matrícula principal SEM EXCEÇÃO\n"
+    "• TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (uma para cada direção)\n"
+    "• EXTRAIA LITERALMENTE cada nome, matrícula, rua mencionada como confrontante\n"
+    "• ANALISE palavra por palavra a descrição do imóvel principal\n"
+    "• PROCURE confrontantes em TODAS as direções (norte, sul, leste, oeste, nascente, poente, frente, fundos)\n"
+    "• SE MENOS DE 4 CONFRONTANTES: releia o texto procurando informações perdidas\n\n"
+
+    "⚠️ CONSEQUÊNCIAS:\n"
     "❌ UM confrontante perdido = usucapião pode ser NEGADO\n"
-    "✅ TODOS confrontantes identificados = processo bem fundamentado\n"
-    "\n\nMISSÃO ADICIONAL CRÍTICA - CADEIA DOMINIAL:\n"
-    "📋 ANALISE TODA A CADEIA DOMINIAL DO IMÓVEL desde a titulação original até o momento atual\n"
-    "📋 IDENTIFIQUE TODOS os proprietários históricos em ordem cronológica\n"
-    "📋 CONSIDERE co-propriedade em percentuais como cadeias dominiais autônomas\n"
-    "📋 PROCURE por registros de transmissões: compra/venda, doação, herança, adjudicação\n"
-    "📋 VERIFIQUE restrições: penhora, indisponibilidade, hipoteca, gravames não baixados\n"
-    "\n\nDeterminar qual é a matrícula principal (objeto do usucapião) e extrair proprietários ATUAIS de cada matrícula. "
-    "Verificar se o Estado de Mato Grosso do Sul aparece como confrontante. "
+    "✅ TODOS confrontantes identificados = processo bem fundamentado\n\n"
+
+    "📋 ANÁLISE COMPLETA OBRIGATÓRIA:\n\n"
+
+    "1️⃣ IDENTIFICAÇÃO DE MATRÍCULAS:\n"
+    "• Encontre todas as matrículas presentes (números, mesmo com variações de formatação)\n"
+    "• Para cada matrícula: extraia número, LOTE, QUADRA, proprietários ATUAIS, descrição, confrontantes\n"
+    "• Ignore vendedores/doadores antigos - considere apenas últimos proprietários\n"
+    "• Determine qual é a matrícula principal (objeto do usucapião)\n\n"
+
+    "2️⃣ ANÁLISE EXTREMAMENTE RIGOROSA DE CONFRONTANTES:\n"
+    "📍 ONDE PROCURAR:\n"
+    "• Seção 'DESCRIÇÃO DO IMÓVEL' da matrícula principal\n"
+    "• Seções 'CONFRONTAÇÕES', 'LIMITES', 'DIVISAS'\n"
+    "• Tabelas, averbações, registros complementares\n\n"
+
+    "🔍 PALAVRAS-CHAVE OBRIGATÓRIAS:\n"
+    "• 'confronta', 'limita', 'divisa', 'ao norte/sul/leste/oeste'\n"
+    "• 'frente', 'fundos', 'laterais', 'adjacente', 'vizinho'\n\n"
+
+    "🎯 TIPOS DE CONFRONTANTES:\n"
+    "• LOTES: 'lote 11', 'lote nº 09' • MATRÍCULAS: 'matrícula 1.234'\n"
+    "• PESSOAS: nomes completos • EMPRESAS: razões sociais\n"
+    "• VIAS PÚBLICAS: ruas, avenidas • ENTES PÚBLICOS: Estado, Município\n"
+    "• ACIDENTES GEOGRÁFICOS: rios, córregos\n\n"
+
+    "⚡ REGRAS CRÍTICAS:\n"
+    "• LEIA PALAVRA POR PALAVRA da descrição do imóvel principal\n"
+    "• TODO lote tem 4 lados = mínimo 4 confrontantes\n"
+    "• Se menos de 4: RELEIA procurando mais\n"
+    "• NÃO suponha, EXTRAIA exatamente como escrito\n\n"
+
+    "3️⃣ CADEIA DOMINIAL COMPLETA:\n"
+    "• Analise histórico completo de proprietários desde titulação original\n"
+    "• Procure seções: 'REGISTRO', 'TRANSMISSÕES', 'AVERBAÇÕES'\n"
+    "• Para cada transmissão: data, tipo, proprietário anterior, novo proprietário, percentual, valor\n"
+    "• Co-propriedade: trate cada percentual como cadeia autônoma\n\n"
+
+    "4️⃣ RESTRIÇÕES E GRAVAMES:\n"
+    "• Identifique restrições não baixadas: PENHORA, HIPOTECA, INDISPONIBILIDADE\n"
+    "• Verifique status: procure 'BAIXA', 'CANCELAMENTO', 'EXTINÇÃO'\n"
+    "• ATENÇÃO ESPECIAL: direitos do Estado de Mato Grosso do Sul\n\n"
+
+    "5️⃣ DADOS GEOMÉTRICOS:\n"
+    "• Extraia medidas: frente, fundos, laterais (em metros)\n"
+    "• Relacione direção com confrontante\n"
+    "• Identifique área total, ângulos, formato do terreno\n\n"
+
+    "🚨 VERIFICAÇÕES OBRIGATÓRIAS:\n"
+    "• Estado de MS como confrontante ou com direitos registrados?\n"
+    "• Mínimo 4 confrontantes identificados?\n"
+    "• Proprietários atuais confirmados?\n"
+    "• Todas as matrículas mapeadas?\n\n"
+
+    "🔥 ZERO TOLERÂNCIA para confrontantes perdidos. Cada um é VITAL.\n\n"
+
     "Considere linguagem arcaica, abreviações, variações tipográficas e OCR imperfeito. "
-    "\n\n🔥 ZERO TOLERÂNCIA para confrontantes perdidos. Cada um é VITAL."
+    "Para análise visual: leia todo texto visível incluindo tabelas, carimbos e anotações manuscritas."
 )
 
-AGGREGATE_PROMPT = (
-    "Você receberá texto extraído de documentos de um processo de usucapião contendo múltiplas matrículas. "
-    "TAREFA COMPLETA:\n\n"
-    "1) IDENTIFIQUE todas as matrículas presentes no texto (números, mesmo com variações de formatação)\n"
-    "2) Para cada matrícula encontrada:\n"
-    "   - Extraia o número da matrícula (normalize: remova pontos/espaços)\n"
-    "   - IDENTIFIQUE o número do LOTE e da QUADRA (FUNDAMENTAL para confrontações)\n"
-    "     * Procure por: 'lote nº', 'lote número', 'lote sob o nº', 'quadra nº', 'quadra número'\n"
-    "     * Exemplos: 'lote 10', 'lote sob o nº 15', 'quadra 21', 'quadra número 05'\n"
-    "   - Identifique APENAS os proprietários ATUAIS (ignore vendedores/doadores antigos)\n"
-    "     * Procure por 'PROPRIETÁRIO(S)', 'ATUAL PROPRIETÁRIO', ou última transação\n"
-    "     * Se há vendas/doações, considere apenas o último comprador/donatário\n"
-    "     * Ignore nomes precedidos por 'de:', 'vendido por:', 'doado por:', 'assinado por:'\n"
-    "   - Extraia a descrição do imóvel\n"
-    "   - Liste TODOS os confrontantes mencionados (EXTREMAMENTE IMPORTANTE)\n"
-    "   - Colete evidências (trechos literais)\n\n"
-    "3) DETERMINE qual é a matrícula principal (objeto do usucapião) - geralmente a primeira ou mais detalhada\n"
-    "4) 🚨 ANÁLISE EXTREMAMENTE RIGOROSA DOS CONFRONTANTES (CRÍTICO PARA USUCAPIÃO):\n"
-    "   \n"
-    "   📍 LOCALIZAÇÃO DE INFORMAÇÕES DE CONFRONTAÇÃO:\n"
-    "   - Procure na seção 'DESCRIÇÃO DO IMÓVEL' da matrícula principal\n"
-    "   - Procure em seções denominadas 'CONFRONTAÇÕES', 'LIMITES', 'DIVISAS'\n"
-    "   - Procure em qualquer texto que descreva o perímetro/limites do imóvel\n"
-    "   - Examine tabelas, averbações, registros complementares\n"
-    "   \n"
-    "   🔍 PALAVRAS-CHAVE OBRIGATÓRIAS A BUSCAR:\n"
-    "   - 'confronta', 'confrontante', 'confrontação', 'confrontações'\n"
-    "   - 'limita', 'limitado', 'limites', 'limita-se'\n"
-    "   - 'divisa', 'faz divisa', 'divisa com'\n"
-    "   - 'ao norte', 'ao sul', 'ao leste', 'ao oeste'\n"
-    "   - 'pela frente', 'pelos fundos', 'laterais'\n"
-    "   - 'adjacente', 'vizinho', 'contíguo'\n"
-    "   \n"
-    "   📊 TIPOS DE CONFRONTANTES A IDENTIFICAR:\n"
-    "   - LOTES: números de lotes confrontantes (ex: 'lote 11', 'lote nº 09', 'lote sob o nº 15')\n"
-    "   - MATRÍCULAS: números de outras matrículas (ex: 'matrícula 1.234', 'mat. 5678')\n"
-    "   - PESSOAS: nomes completos de proprietários vizinhos\n"
-    "   - EMPRESAS: razões sociais, CNPJs\n"
-    "   - VIAS PÚBLICAS: ruas, avenidas, praças, rodovias\n"
-    "   - ENTES PÚBLICOS: Estado, Município, União, autarquias\n"
-    "   - ACIDENTES GEOGRÁFICOS: rios, córregos, morros\n"
-    "   - OUTROS IMÓVEIS: glebas, chácaras identificados\n"
-    "   \n"
-    "   ⚠️ INSTRUÇÕES CRÍTICAS:\n"
-    "   - LEIA PALAVRA POR PALAVRA da descrição do imóvel principal\n"
-    "   - TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (uma para cada direção)\n"
-    "   - Para CADA direção (norte, sul, leste, oeste, nascente, poente, frente, fundos, direita, esquerda), identifique O QUE confronta\n"
-    "   - Se encontrou menos de 4 confrontantes, RELEIA o texto procurando mais\n"
-    "   - Se mencionar 'terreno de João Silva', João Silva é confrontante\n"
-    "   - Se mencionar 'matrícula 1.234', a matrícula 1.234 é confrontante\n"
-    "   - Se mencionar 'Rua das Flores', a Rua das Flores é confrontante\n"
-    "   - Se mencionar 'lote 11', o lote 11 é confrontante\n"
-    "   - NÃO suponha, EXTRAIA exatamente como está escrito\n"
-    "   - ALERTAR SE MENOS DE 4 CONFRONTANTES: pode estar faltando informação\n"
-    "   \n"
-    "5) VERIFICAÇÃO DE QUANTIDADE MÍNIMA DE CONFRONTANTES:\n"
-    "   - CONTE quantos confrontantes identificou para a matrícula principal\n"
-    "   - Se MENOS de 4 confrontantes: RELEIA todo o texto novamente\n"
-    "   - Procure por termos como 'limita-se por', 'cerca-se de', 'circundado por'\n"
-    "   - Verifique se há descrições em formatos diferentes (tabelas, parágrafos separados)\n"
-    "   - UM LOTE SEMPRE TEM PELO MENOS 4 LADOS, portanto 4 CONFRONTANTES\n"
-    "   \n"
-    "6) VERIFICAÇÃO CRUZADA DE MATRÍCULAS:\n"
-    "   - Se identificou que matrícula A confronta com matrícula B, certifique-se que ambas estão no documento\n"
-    "   - Liste todas as matrículas mencionadas como confrontantes na seção 'matriculas_confrontantes'\n"
-    "   \n"
-    "7) VERIFICAÇÃO ESPECÍFICA DO ESTADO DE MS:\n"
-    "   - Procure por: 'Estado', 'Estado de Mato Grosso do Sul', 'MS', 'Governo', 'Fazenda Pública'\n"
-    "   - Se encontrar qualquer referência ao Estado como confrontante, marque como true\n\n"
-    "8) 📋 ANÁLISE COMPLETA DA CADEIA DOMINIAL (CRÍTICO PARA USUCAPIÃO):\n"
-    "   Para definir a propriedade do imóvel, analise toda a cadeia dominial, isto é, o histórico completo de proprietários desde a titulação original até o momento atual.\n"
-    "   \n"
-    "   🔍 PROCURE POR SEÇÕES:\n"
-    "   - 'REGISTRO', 'REGISTRO ANTERIOR', 'ORIGEM', 'PROCEDÊNCIA'\n"
-    "   - 'TRANSMISSÕES', 'AVERBAÇÕES', 'HISTÓRICO DE PROPRIETÁRIOS'\n"
-    "   - Numeração sequencial de registros (R.1, R.2, R.3, etc.)\n"
-    "   - Datas de transações e tipos de transmissão\n"
-    "   \n"
-    "   📊 EXTRAIA PARA CADA TRANSMISSÃO:\n"
-    "   - Data da transmissão\n"
-    "   - Tipo de transmissão (compra/venda, doação, herança, adjudicação, etc.)\n"
-    "   - Proprietário anterior (vendedor/doador)\n"
-    "   - Novo proprietário (comprador/donatário)\n"
-    "   - Percentual de propriedade (se houver co-propriedade)\n"
-    "   - Valor da transação (se informado)\n"
-    "   \n"
-    "   🎯 CO-PROPRIEDADE:\n"
-    "   - Considere co-propriedade em percentuais como cadeias dominiais autônomas\n"
-    "   - Se João possui 50% e Maria possui 50%, trate como duas cadeias separadas\n"
-    "   - Rastreie cada percentual independentemente\n"
-    "   \n"
-    "9) 🚨 IDENTIFICAÇÃO DE RESTRIÇÕES E GRAVAMES:\n"
-    "   Verificar e indicar restrições sobre o imóvel que não tenham sido baixadas.\n"
-    "   \n"
-    "   🔍 PROCURE POR:\n"
-    "   - 'PENHORA', 'ARRESTO', 'SEQUESTRO'\n"
-    "   - 'INDISPONIBILIDADE', 'BLOQUEIO JUDICIAL'\n"
-    "   - 'HIPOTECA', 'PENHOR', 'ANTICRESE'\n"
-    "   - 'USUFRUTO', 'ENFITEUSE', 'SERVIDÃO'\n"
-    "   - 'FIDEICOMISSO', 'ALIENAÇÃO FIDUCIÁRIA'\n"
-    "   - 'ÔNUS', 'GRAVAME', 'RESTRIÇÃO'\n"
-    "   \n"
-    "   ⚖️ VERIFIQUE STATUS:\n"
-    "   - Para cada restrição encontrada, verifique se foi BAIXADA ou CANCELADA\n"
-    "   - Procure por: 'BAIXA', 'CANCELAMENTO', 'EXTINÇÃO', 'QUITAÇÃO'\n"
-    "   - Se não há registro de baixa, considere a restrição como VIGENTE\n"
-    "   - Anote datas de registro e eventual baixa\n"
-    "   \n"
-    "   🚨 ATENÇÃO ESPECIAL - ESTADO DE MATO GROSSO DO SUL:\n"
-    "   - IDENTIFIQUE com prioridade máxima se o Estado de MS tem qualquer direito registrado\n"
-    "   - Procure por: 'Estado de Mato Grosso do Sul', 'Estado de MS', 'Fazenda Pública', 'Governo do Estado'\n"
-    "   - Verifique se aparece como: CREDOR em hipotecas/penhoras, PROPRIETÁRIO, USUFRUTUÁRIO\n"
-    "   - Marque como CRÍTICO qualquer direito vigente do Estado de MS\n"
-    "   \n"
-    "10) 📐 EXTRAÇÃO DE DADOS GEOMÉTRICOS (PARA GERAÇÃO DE PLANTA):\n"
-    "   Para possibilitar a geração automática de planta do imóvel, extraia com precisão:\n"
-    "   \n"
-    "   📏 MEDIDAS LINEARES:\n"
-    "   - FRENTE: medida da frente do lote (em metros)\n"
-    "   - FUNDOS: medida dos fundos do lote (em metros)\n"
-    "   - LATERAL DIREITA: medida do lado direito (em metros)\n"
-    "   - LATERAL ESQUERDA: medida do lado esquerdo (em metros)\n"
-    "   - Procure por: 'medindo', 'metros', 'm', 'frente', 'fundos', 'lado direito', 'lado esquerdo'\n"
-    "   \n"
-    "   🧭 ORIENTAÇÃO E CONFRONTAÇÕES:\n"
-    "   - Para cada lado: identifique COM O QUE confronta\n"
-    "   - Relacione direção com confrontante: 'frente' -> 'Rua X', 'fundos' -> 'lote Y'\n"
-    "   - Procure por: 'ao norte com', 'ao sul com', 'frente para', 'fundos com'\n"
-    "   \n"
-    "   📐 ÂNGULOS E FORMATO:\n"
-    "   - Identifique se o terreno é retangular (ângulos de 90°)\n"
-    "   - Se irregular: procure por ângulos específicos mencionados\n"
-    "   - Formato: 'retangular', 'irregular', 'triangular', 'trapezoidal'\n"
-    "   \n"
-    "   📊 ÁREA TOTAL:\n"
-    "   - Procure por: 'área de', 'com área total de', 'm²', 'metros quadrados'\n"
-    "   - Calcule se não informado: frente × lateral (para retângulos)\n"
-    "\n🔥 ALERTA MÁXIMO: A omissão de qualquer confrontante pode invalidar o usucapião. Seja METICULOSO.\n\n"
-    "💡 EXEMPLO PRÁTICO DE IDENTIFICAÇÃO:\n"
-    "Se o texto diz: 'lote nº 10 da quadra 21, confronta ao norte com o lote 11, ao sul com a Rua das Flores, ao leste com terreno de Maria Santos, matrícula 1.234, e ao oeste com o Estado de Mato Grosso do Sul'\n"
-    "EXTRAIA LOTE/QUADRA: lote='10', quadra='21'\n"
-    "EXTRAIA CONFRONTANTES: ['lote 11', 'Rua das Flores', 'Maria Santos', 'matrícula 1.234', 'Estado de Mato Grosso do Sul']\n"
-    "CONTAGEM: 5 confrontantes identificados (✅ mais que o mínimo de 4)\n"
-    "NUNCA omita nenhum lote, nome ou referência mencionada.\n\n"
-    "⚠️ REGRA FUNDAMENTAL: Se encontrar menos de 4 confrontantes, PROCURE NOVAMENTE no texto!\n\n"
-    "🧠 ANÁLISE EFICIENTE EM 3 ETAPAS:\n"
-    "\n"
-    "ETAPA 1 - MAPEAMENTO RÁPIDO:\n"
-    "- Identifique a matrícula PRINCIPAL e suas confrontantes\n"
-    "- Conte: tem pelo menos 4 confrontantes? Se não, procure mais\n"
-    "\n"
-    "ETAPA 2 - VERIFICAÇÃO CRUZADA:\n"
-    "- Confirme proprietários ATUAIS (ignore histórico de vendas)\n"
-    "- Verifique presença do Estado de MS como confrontante\n"
-    "\n"
-    "ETAPA 3 - VALIDAÇÃO:\n"
-    "- ✅ Todas as matrículas identificadas?\n"
-    "- ✅ Mínimo 4 confrontantes da principal?\n"
-    "- ✅ Proprietários atuais confirmados?\n"
-    "\n"
-    "Responda em JSON com este esquema EXPANDIDO:\n"
-    "{\n"
-    '  "matriculas_encontradas": [\n'
-    '    {\n'
-    '      "numero": "12345",\n'
-    '      "lote": "10",\n'
-    '      "quadra": "21",\n'
-    '      "proprietarios": ["Nome 1", "Nome 2"],\n'
-    '      "descricao": "descrição do imóvel",\n'
-    '      "confrontantes": ["lote 11", "confrontante 2"],\n'
-    '      "evidence": ["trecho literal 1", "trecho literal 2"],\n'
-    '      "cadeia_dominial": [\n'
-    '        {\n'
-    '          "data": "01/01/2020",\n'
-    '          "tipo_transmissao": "compra e venda",\n'
-    '          "proprietario_anterior": "João Silva",\n'
-    '          "novo_proprietario": "Maria Santos",\n'
-    '          "percentual": "100%",\n'
-    '          "valor": "R$ 100.000,00",\n'
-    '          "registro": "R.1"\n'
-    '        }\n'
-    '      ],\n'
-    '      "restricoes": [\n'
-    '        {\n'
-    '          "tipo": "hipoteca",\n'
-    '          "data_registro": "15/06/2019",\n'
-    '          "credor": "Banco XYZ",\n'
-    '          "valor": "R$ 80.000,00",\n'
-    '          "situacao": "vigente",\n'
-    '          "data_baixa": null,\n'
-    '          "observacoes": "hipoteca para financiamento imobiliário"\n'
-    '        }\n'
-    '      ],\n'
-    '      "dados_geometricos": {\n'
-    '        "medidas": {\n'
-    '          "frente": 14.0,\n'
-    '          "fundos": 14.0,\n'
-    '          "lateral_direita": 30.69,\n'
-    '          "lateral_esquerda": 30.69\n'
-    '        },\n'
-    '        "confrontantes": {\n'
-    '          "frente": "Rua Alberto Albertini",\n'
-    '          "fundos": "Corredor Público",\n'
-    '          "lateral_direita": "lote 05",\n'
-    '          "lateral_esquerda": "lote 03"\n'
-    '        },\n'
-    '        "area_total": 429.66,\n'
-    '        "angulos": {\n'
-    '          "frente": 90.0,\n'
-    '          "lateral_direita": 90.0,\n'
-    '          "fundos": 90.0,\n'
-    '          "lateral_esquerda": 90.0\n'
-    '        },\n'
-    '        "formato": "retangular",\n'
-    '        "observacoes": ["terreno plano", "esquina"]\n'
-    '      }\n'
-    '    }\n'
-    '  ],\n'
-    '  "matricula_principal": "12345",\n'
-    '  "matriculas_confrontantes": ["12346", "12347"],\n'
-    '  "lotes_confrontantes": [\n'
-    '    {\n'
-    '      "identificador": "lote 11",\n'
-    '      "tipo": "lote",\n'
-    '      "matricula_anexada": "12346",\n'
-    '      "direcao": "norte"\n'
-    '    },\n'
-    '    {\n'
-    '      "identificador": "Rua das Flores",\n'
-    '      "tipo": "via_publica",\n'
-    '      "matricula_anexada": null,\n'
-    '      "direcao": "frente"\n'
-    '    },\n'
-    '    {\n'
-    '      "identificador": "João Silva",\n'
-    '      "tipo": "pessoa",\n'
-    '      "matricula_anexada": null,\n'
-    '      "direcao": "sul"\n'
-    '    },\n'
-    '    {\n'
-    '      "identificador": "lote 09",\n'
-    '      "tipo": "lote",\n'
-    '      "matricula_anexada": "12348",\n'
-    '      "direcao": "leste"\n'
-    '    }\n'
-    '  ],\n'
-    '  "matriculas_nao_confrontantes": ["12348"],\n'
-    '  "lotes_sem_matricula": ["lote 12", "lote 15"],\n'
-    '  "confrontacao_completa": true|false|null,\n'
-    '  "proprietarios_identificados": {"12345": ["Nome"], "12346": ["Nome2"]},\n'
-    '  "resumo_analise": {\n'
-    '    "cadeia_dominial_completa": {\n'
-    '      "12345": [\n'
-    '        {"proprietario": "Origem/Titulação", "periodo": "até 2015", "percentual": "100%"},\n'
-    '        {"proprietario": "João Silva", "periodo": "2015-2020", "percentual": "100%"},\n'
-    '        {"proprietario": "Maria Santos", "periodo": "2020-atual", "percentual": "100%"}\n'
-    '      ]\n'
-    '    },\n'
-    '    "restricoes_vigentes": [\n'
-    '      {"tipo": "hipoteca", "credor": "Banco XYZ", "valor": "R$ 80.000,00", "status": "vigente"}\n'
-    '    ],\n'
-    '    "restricoes_baixadas": [\n'
-    '      {"tipo": "penhora", "data_baixa": "10/12/2021", "motivo": "quitação judicial"}\n'
-    '    ],\n'
-    '    "estado_ms_direitos": {\n'
-    '      "tem_direitos": true|false,\n'
-    '      "detalhes": [\n'
-    '        {"matricula": "12345", "tipo_direito": "credor_hipoteca", "status": "vigente", "valor": "R$ 50.000,00"},\n'
-    '        {"matricula": "12346", "tipo_direito": "proprietario", "percentual": "50%", "status": "atual"}\n'
-    '      ],\n'
-    '      "criticidade": "alta|media|baixa",\n'
-    '      "observacao": "Estado de MS possui hipoteca vigente na matrícula principal"\n'
-    '    }\n'
-    '  },\n'
-    '  "confidence": 0.0-1.0,\n'
-    '  "reasoning": "explicação detalhada da análise"\n'
-    "}\n\n"
-    "TIPOS DE CONFRONTANTES:\n"
-    "- 'lote': lotes numerados (ex: lote 11, lote 15)\n"
-    "- 'matrícula': matrículas identificadas por número\n"
-    "- 'pessoa': nomes de pessoas proprietárias\n"
-    "- 'via_publica': ruas, avenidas, praças\n"
-    "- 'estado': Estado, Município, União\n"
-    "- 'outros': córregos, rios, outros elementos\n\n"
-    "INSTRUÇÕES ESPECIAIS:\n"
-    "- Em 'lotes_confrontantes': liste TODOS os confrontantes com tipo e direção\n"
-    "- Em 'matriculas_nao_confrontantes': matrículas anexadas que NÃO são confrontantes da principal\n"
-    "- Em 'lotes_sem_matricula': lotes confrontantes mencionados sem matrícula anexada"
-)
+# Instruções específicas por tipo de análise
+ANALYSIS_INSTRUCTIONS = {
+    'aggregate': (
+        "Você receberá texto extraído de documentos de um processo de usucapião contendo múltiplas matrículas. "
+        "Aplique todas as instruções do sistema para análise completa.\n\n"
+    ),
+    'vision': (
+        "Analise visualmente as imagens de matrículas imobiliárias. "
+        "Leia todo o texto visível (tabelas, carimbos, anotações) considerando ruídos de OCR. "
+        "Aplique todas as instruções do sistema com o mesmo rigor da análise textual.\n\n"
+    ),
+    'partial': (
+        "Você receberá UM TRECHO de uma matrícula. Retorne APENAS JSON com:\n"
+        '{ "confrontantes": ["..."], "evidence": ["trecho literal..."] }\n'
+        "Liste confrontantes exatamente como aparecem no trecho e evidências curtas.\n\n"
+    )
+}
 
-PARTIAL_PROMPT = (
-    "Você receberá UM TRECHO de uma matrícula. Retorne APENAS JSON com:\n"
-    '{ "confrontantes": ["..."], "evidence": ["trecho literal..."] }\n'
-    "– Liste confrontantes exatamente como aparecerem no trecho (sem normalizar), e evidências curtas."
-)
+# Esquema JSON padronizado
+JSON_SCHEMA = '''
+Responda em JSON com este esquema:
+{
+  "matriculas_encontradas": [
+    {
+      "numero": "12345",
+      "lote": "10",
+      "quadra": "21",
+      "proprietarios": ["Nome 1", "Nome 2"],
+      "descricao": "descrição do imóvel",
+      "confrontantes": ["lote 11", "confrontante 2"],
+      "evidence": ["trecho literal 1", "trecho literal 2"],
+      "cadeia_dominial": [
+        {
+          "data": "01/01/2020",
+          "tipo_transmissao": "compra e venda",
+          "proprietario_anterior": "João Silva",
+          "novo_proprietario": "Maria Santos",
+          "percentual": "100%",
+          "valor": "R$ 100.000,00",
+          "registro": "R.1"
+        }
+      ],
+      "restricoes": [
+        {
+          "tipo": "hipoteca",
+          "data_registro": "15/06/2019",
+          "credor": "Banco XYZ",
+          "valor": "R$ 80.000,00",
+          "situacao": "vigente",
+          "data_baixa": null,
+          "observacoes": "hipoteca para financiamento imobiliário"
+        }
+      ],
+      "dados_geometricos": {
+        "medidas": {
+          "frente": 14.0,
+          "fundos": 14.0,
+          "lateral_direita": 30.69,
+          "lateral_esquerda": 30.69
+        },
+        "confrontantes": {
+          "frente": "Rua Alberto Albertini",
+          "fundos": "Corredor Público",
+          "lateral_direita": "lote 05",
+          "lateral_esquerda": "lote 03"
+        },
+        "area_total": 429.66,
+        "angulos": {
+          "frente": 90.0,
+          "lateral_direita": 90.0,
+          "fundos": 90.0,
+          "lateral_esquerda": 90.0
+        },
+        "formato": "retangular",
+        "observacoes": ["terreno plano", "esquina"]
+      }
+    }
+  ],
+  "matricula_principal": "12345",
+  "matriculas_confrontantes": ["12346", "12347"],
+  "lotes_confrontantes": [
+    {
+      "identificador": "lote 11",
+      "tipo": "lote",
+      "matricula_anexada": "12346",
+      "direcao": "norte"
+    }
+  ],
+  "matriculas_nao_confrontantes": ["12348"],
+  "lotes_sem_matricula": ["lote 12", "lote 15"],
+  "confrontacao_completa": true|false|null,
+  "proprietarios_identificados": {"12345": ["Nome"], "12346": ["Nome2"]},
+  "resumo_analise": {
+    "cadeia_dominial_completa": {
+      "12345": [
+        {"proprietario": "Origem/Titulação", "periodo": "até 2015", "percentual": "100%"},
+        {"proprietario": "João Silva", "periodo": "2015-2020", "percentual": "100%"},
+        {"proprietario": "Maria Santos", "periodo": "2020-atual", "percentual": "100%"}
+      ]
+    },
+    "restricoes_vigentes": [
+      {"tipo": "hipoteca", "credor": "Banco XYZ", "valor": "R$ 80.000,00", "status": "vigente"}
+    ],
+    "restricoes_baixadas": [
+      {"tipo": "penhora", "data_baixa": "10/12/2021", "motivo": "quitação judicial"}
+    ],
+    "estado_ms_direitos": {
+      "tem_direitos": true|false,
+      "detalhes": [
+        {"matricula": "12345", "tipo_direito": "credor_hipoteca", "status": "vigente", "valor": "R$ 50.000,00"}
+      ],
+      "criticidade": "alta|media|baixa",
+      "observacao": "Estado de MS possui hipoteca vigente na matrícula principal"
+    }
+  },
+  "confidence": 0.0-1.0,
+  "reasoning": "explicação detalhada da análise"
+}
+
+TIPOS DE CONFRONTANTES:
+- 'lote': lotes numerados (ex: lote 11, lote 15)
+- 'matricula': matrículas identificadas por número
+- 'pessoa': nomes de pessoas proprietárias
+- 'via_publica': ruas, avenidas, praças
+- 'estado': Estado, Município, União
+- 'outros': córregos, rios, outros elementos
+'''
+
+def build_prompt(prompt_type: str) -> str:
+    """Retorna o prompt unificado para o tipo informado.
+
+    prompt_type: 'system', 'aggregate', 'vision' ou 'partial'
+    """
+    prompt = prompt_type.lower().strip()
+
+    if prompt == 'system':
+        return UNIFIED_SYSTEM_PROMPT
+
+    if prompt in ANALYSIS_INSTRUCTIONS:
+        if prompt == 'partial':
+            return UNIFIED_SYSTEM_PROMPT + "\n\n" + ANALYSIS_INSTRUCTIONS[prompt]
+        else:
+            return UNIFIED_SYSTEM_PROMPT + "\n\n" + ANALYSIS_INSTRUCTIONS[prompt] + JSON_SCHEMA
+
+    raise ValueError("prompt_type must be 'system', 'aggregate', 'vision', or 'partial'")
+
+def build_analysis_prompt(mode: str) -> str:
+    """Conveniência para obter prompt de análise textual ou visual."""
+    prompt = mode.lower().strip()
+    if prompt == 'text':
+        return build_prompt('aggregate')
+    elif prompt == 'vision':
+        return build_prompt('vision')
+    else:
+        raise ValueError("mode must be 'text' or 'vision'")
+
+# Compatibilidade com código existente
+SYSTEM_PROMPT = build_prompt('system')
+AGGREGATE_PROMPT = build_analysis_prompt('text')
+PARTIAL_PROMPT = build_prompt('partial')
 
 
 def _safe_get_dict(data, key, default=None):
@@ -1031,116 +964,14 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
         if not images_b64:
             raise ValueError("Não foi possível converter nenhuma imagem para envio")
         
-        # Prompt específico para análise visual
-        vision_prompt = (
-            "Analise visualmente estas imagens de documentos de matrícula imobiliária de um processo de usucapião. "
-            f"IDENTIFIQUE e EXTRAIA com precisão:\n\n"
-            "1) TODOS os números de matrícula visíveis nos documentos\n"
-            "2) Para cada matrícula:\n"
-            "   - IDENTIFIQUE VISUALMENTE o número do LOTE e QUADRA (CRÍTICO para confrontações)\n"
-            "     * Procure texto: 'lote nº', 'lote número', 'lote sob o nº', 'quadra nº'\n"
-            "     * Exemplos visuais: 'lote 10', 'quadra 21', 'lote sob o nº 15'\n"
-            "   - PROPRIETÁRIOS ATUAIS apenas (ignore vendedores/doadores antigos)\n"
-            "     * Procure seções como 'PROPRIETÁRIO(S)' ou última transação registrada\n"
-            "     * Se há histórico de vendas/doações, considere apenas o último titular\n"
-            "   - Descrição do imóvel (localização, medidas)\n"
-            "   - TODOS os confrontantes mencionados (CRÍTICO - NÃO PERCA NENHUM)\n"
-            "3) DETERMINE qual matrícula é a principal (objeto do usucapião)\n"
-            "4) 🚨 ANÁLISE PIXEL-POR-PIXEL DOS CONFRONTANTES (ULTRA CRÍTICO):\n"
-            "   \n"
-            "   🔍 ONDE PROCURAR VISUALMENTE:\n"
-            "   - Seção 'DESCRIÇÃO DO IMÓVEL' da matrícula principal\n"
-            "   - Qualquer parágrafo que descreva limites/perímetro do terreno\n"
-            "   - Tabelas com informações de confrontação\n"
-            "   - Averbações, registros, anotações manuscritas\n"
-            "   - Carimbos com informações complementares\n"
-            "   \n"
-            "   📝 TEXTO VISUAL A IDENTIFICAR (OBRIGATÓRIO):\n"
-            "   - 'confronta com', 'confrontando', 'confrontações'\n"
-            "   - 'limita-se', 'limitado por', 'limites'\n"
-            "   - 'faz divisa', 'divisa com', 'divisas'\n"
-            "   - 'ao norte', 'ao sul', 'leste', 'oeste'\n"
-            "   - 'frente', 'fundos', 'lateral'\n"
-            "   - 'adjacente', 'vizinho'\n"
-            "   \n"
-            "   🎯 CONFRONTANTES A CAPTURAR VISUALMENTE:\n"
-            "   - LOTES: 'lote 11', 'lote nº 09', 'lote sob o nº 15' (PRIORIDADE MÁXIMA)\n"
-            "   - NÚMEROS DE MATRÍCULAS: '1.234', 'mat. 5678', 'matrícula 9999'\n"
-            "   - NOMES DE PESSOAS: qualquer nome próprio mencionado como confrontante\n"
-            "   - EMPRESAS: razões sociais vizinhas\n"
-            "   - RUAS/AVENIDAS: nomes de vias públicas\n"
-            "   - ESTADO/GOVERNO: 'Estado', 'MS', 'Fazenda Pública'\n"
-            "   - RIOS/CÓRREGOS: acidentes geográficos\n"
-            "   \n"
-            "   ⚡ MÉTODO DE ANÁLISE VISUAL:\n"
-            "   - LEIA palavra por palavra todo texto da descrição do imóvel principal\n"
-            "   - TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (norte, sul, leste, oeste; ou nascente, poente, etc)\n"
-            "   - Para cada direção mencionada, identifique EXATAMENTE o que confronta\n"
-            "   - Se encontrou menos de 4 confrontantes, EXAMINE NOVAMENTE as imagens\n"
-            "   - Não interprete: extraia o texto literal como confrontante\n"
-            "   - Se vê 'confronta ao norte com João Silva', anote 'João Silva'\n"
-            "   - Se vê 'limita ao sul com matrícula 1234', anote '1234'\n"
-            "   - Se vê 'leste com lote 11', anote 'lote 11'\n"
-            "   - Se vê 'frente para Rua X', anote 'Rua X'\n"
-            "   - ALERTA: Se menos de 4 confrontantes, pode haver texto não detectado\n"
-            "   \n"
-            "5) VERIFICAÇÃO CRUZADA VISUAL:\n"
-            "   - Se viu matrícula A confrontando com B, certifique-se que ambas estão no documento\n"
-            "   - Liste TODAS as matrículas vistas como confrontantes\n"
-            "   \n"
-            "6) BUSCA ESPECÍFICA POR ESTADO DE MS:\n"
-            "   - Escaneie todo documento procurando 'Estado', 'MS', 'Mato Grosso do Sul' como confrontante\n\n"
-            "7) 📋 ANÁLISE VISUAL DA CADEIA DOMINIAL:\n"
-            "   - Identifique visualmente todas as transmissões de propriedade\n"
-            "   - Procure seções 'REGISTRO', 'TRANSMISSÕES', 'AVERBAÇÕES'\n"
-            "   - Para cada transmissão: data, tipo, proprietário anterior, novo proprietário, percentual\n"
-            "   - Considere co-propriedade como cadeias autônomas\n"
-            "\n"
-            "8) 🚨 IDENTIFICAÇÃO VISUAL DE RESTRIÇÕES:\n"
-            "   - Procure por 'PENHORA', 'HIPOTECA', 'INDISPONIBILIDADE', 'ÔNUS'\n"
-            "   - Verifique se há registros de 'BAIXA' ou 'CANCELAMENTO'\n"
-            "   - Liste apenas restrições ainda VIGENTES\n"
-            "\n🔥 VIDA OU MORTE: Cada confrontante perdido pode invalidar o usucapião. ZERO TOLERÂNCIA para omissões.\n\n"
-            "🔄 ANÁLISE EM 2 PASSADAS EFICIENTES:\n"
-            "\n"
-            "PASSADA 1 - IDENTIFICAÇÃO:\n"
-            "- Identifique a matrícula PRINCIPAL e todas as confrontantes\n"
-            "- Conte confrontantes: mínimo 4 para cada direção\n"
-            "- Se menos de 4: procure em outras seções do documento\n"
-            "\n"
-            "PASSADA 2 - VALIDAÇÃO:\n"
-            "- Confirme proprietários ATUAIS (ignore vendedores antigos)\n"
-            "- Verifique presença do Estado de MS como confrontante\n"
-            "- Extraia lote/quadra de cada matrícula\n"
-            "\n"
-            "IMPORTANTE: LEIA com atenção todo o texto visível, incluindo tabelas, carimbos e anotações.\n"
-            "Responda em JSON seguindo exatamente este formato:\n\n"
-        )
-        
-        # Extrai o esquema JSON do AGGREGATE_PROMPT de forma segura
-        try:
-            if "Responda em JSON com este esquema:\n" in AGGREGATE_PROMPT:
-                schema_part = AGGREGATE_PROMPT.split("Responda em JSON com este esquema:\n")[1]
-            elif "Responda em JSON com este esquema EXPANDIDO:\n" in AGGREGATE_PROMPT:
-                schema_part = AGGREGATE_PROMPT.split("Responda em JSON com este esquema EXPANDIDO:\n")[1]
-            elif "Responda em JSON" in AGGREGATE_PROMPT:
-                schema_part = AGGREGATE_PROMPT.split("Responda em JSON")[1].split(":\n")[1] if ":\n" in AGGREGATE_PROMPT.split("Responda em JSON")[1] else AGGREGATE_PROMPT.split("Responda em JSON")[1]
-            else:
-                schema_part = "{\n  \"matriculas_encontradas\": [],\n  \"matricula_principal\": null,\n  \"confrontacao_completa\": false\n}"
-                
-            vision_prompt += schema_part
-            print(f"✅ Schema JSON extraído com sucesso ({len(schema_part)} chars)")
-            
-        except Exception as schema_error:
-            print(f"⚠️ Erro ao extrair schema JSON: {schema_error}")
-            fallback_schema = "{\n  \"matriculas_encontradas\": [],\n  \"matricula_principal\": null,\n  \"confrontacao_completa\": false\n}"
-            vision_prompt += fallback_schema
-        
-        # Chama API com visão
-        print(f"🚀 Enviando {len(images_b64)} imagem(ns) para {model}...")
-        print(f"📏 Tamanho do prompt: {len(vision_prompt)} chars")
-        
-        print(f"🔍 DEBUG: Iniciando chamada da API...")
+        # Prompt unificado para analise visual
+        vision_prompt = build_analysis_prompt('vision')
+
+        print(f"[Vision] Enviando {len(images_b64)} imagem(ns) para {model}...")
+        print(f"[Vision] Tamanho do prompt: {len(vision_prompt)} chars")
+
+        print("[Vision] DEBUG: Iniciando chamada da API...")
+
         data = call_openrouter_vision(
             model=model,
             system_prompt=SYSTEM_PROMPT,
@@ -1561,6 +1392,8 @@ class FeedbackManager:
     
     def __init__(self):
         self.feedback_pendente = []
+        self.feedback_file = Path(__file__).with_name('dist') / 'feedback_pendente.json'
+        self.feedback_file.parent.mkdir(parents=True, exist_ok=True)
         
     def solicitar_feedback(self, parent, dados_geracao):
         """Mostra dialog de feedback após uma geração"""
@@ -1576,41 +1409,65 @@ class FeedbackManager:
         thread.start()
         
     def _enviar_feedback_async(self, feedback_data):
-        """Envio assíncrono para não travar a interface"""
+        """Envio assincrono para nao travar a interface"""
         try:
-            # Preparar dados para o Google Forms
-            form_data = {
-                GOOGLE_FORM_CONFIG["fields"]["resultado"]: feedback_data["resultado"],
-                GOOGLE_FORM_CONFIG["fields"]["descricao"]: feedback_data.get("descricao", ""),
-                GOOGLE_FORM_CONFIG["fields"]["timestamp"]: feedback_data["timestamp"],
-                GOOGLE_FORM_CONFIG["fields"]["dados_tecnicos"]: json.dumps(feedback_data["dados_tecnicos"], ensure_ascii=False)
-            }
-            
-            # Enviar para Google Forms
-            response = requests.post(
-                GOOGLE_FORM_CONFIG["url"],
-                data=form_data,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                print("✅ Feedback enviado com sucesso!")
-            else:
-                print(f"⚠️ Erro ao enviar feedback: {response.status_code}")
+            url = (GOOGLE_FORM_CONFIG.get("url") or "").strip()
+            if not url:
+                print("[Feedback] Google Forms nao configurado. Salvando localmente.")
                 self._salvar_feedback_local(feedback_data)
-                
+                return
+
+            field_map = GOOGLE_FORM_CONFIG.get("fields", {})
+            form_data = {}
+
+            for field_key in ("tipo", "descricao", "modelo", "timestamp", "versao"):
+                field_id = field_map.get(field_key)
+                value = feedback_data.get(field_key)
+                if field_id and value is not None:
+                    form_data[field_id] = value
+
+            if not form_data:
+                print("[Feedback] Nenhum campo valido configurado para envio. Salvando localmente.")
+                self._salvar_feedback_local(feedback_data)
+                return
+
+            response = requests.post(
+                url,
+                data=form_data,
+                timeout=10,
+                headers={
+                    "User-Agent": "FeedbackManager/1.0",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+            )
+
+            if response.status_code in (200, 302):
+                print("[Feedback] Feedback enviado com sucesso.")
+            else:
+                print(f"[Feedback] Erro ao enviar feedback: {response.status_code}")
+                self._salvar_feedback_local(feedback_data)
+
         except Exception as e:
-            print(f"❌ Erro de conexão: {e}")
+            print(f"[Feedback] Erro de conexao: {e}")
             self._salvar_feedback_local(feedback_data)
-            
+
     def _salvar_feedback_local(self, feedback_data):
-        """Salva feedback localmente se não conseguir enviar"""
+        """Salva feedback localmente se nao conseguir enviar"""
         try:
-            with open("feedback_pendente.json", "a", encoding="utf-8") as f:
-                f.write(json.dumps(feedback_data, ensure_ascii=False) + "\n")
-            print("💾 Feedback salvo localmente para envio posterior")
+            registros = []
+            if self.feedback_file.exists():
+                try:
+                    registros = json.loads(self.feedback_file.read_text(encoding='utf-8'))
+                except json.JSONDecodeError:
+                    registros = []
+
+            registros.append(feedback_data)
+            registros = registros[-100:]
+
+            self.feedback_file.write_text(json.dumps(registros, ensure_ascii=False, indent=2), encoding='utf-8')
+            print(f"[Feedback] Feedback salvo localmente em {self.feedback_file}")
         except Exception as e:
-            print(f"Erro ao salvar feedback local: {e}")
+            print(f"[Feedback] Erro ao salvar feedback local: {e}")
 
 class FeedbackDialog(tk.Toplevel):
     """Dialog para coleta de feedback do usuário"""
@@ -1709,22 +1566,50 @@ class FeedbackDialog(tk.Toplevel):
         self.geometry(f"+{x}+{y}")
         
     def enviar_feedback(self):
+        tipo_usuario = "SUCESSO_AUTO" if self.var_resultado.get() == "acertou" else "ERRO"
+        descricao_usuario = self.txt_descricao.get("1.0", "end-1c").strip()
+
+        if not descricao_usuario:
+            descricao_usuario = (
+                "Usuario confirmou que as confrontacoes estao corretas."
+                if tipo_usuario == "SUCESSO_AUTO"
+                else "Usuario indicou problemas nas confrontacoes, sem detalhes adicionais."
+            )
+
+        detalhes_tecnicos = {
+            "arquivo_processado": self.dados_geracao.get("arquivo", ""),
+            "confrontacoes_encontradas": self.dados_geracao.get("confrontacoes", 0),
+            "tempo_processamento": self.dados_geracao.get("tempo", 0),
+            "planta_gerada": self.dados_geracao.get("planta_gerada", False),
+            "modelo_ia_usado": self.dados_geracao.get("modelo", DEFAULT_MODEL),
+            "resultado_usuario": self.var_resultado.get()
+        }
+
+        resumo_detalhes = "\n".join(
+            f"{chave}: {valor}"
+            for chave, valor in detalhes_tecnicos.items()
+            if valor not in (None, "")
+        )
+
+        descricao_completa = descricao_usuario
+        if resumo_detalhes:
+            descricao_completa = f"{descricao_usuario}\n\n[Detalhes tecnicos]\n{resumo_detalhes}"
+
         feedback_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "resultado": self.var_resultado.get(),
-            "descricao": self.txt_descricao.get("1.0", "end-1c").strip(),
-            "dados_tecnicos": {
-                "arquivo_processado": self.dados_geracao.get("arquivo", ""),
-                "confrontacoes_encontradas": self.dados_geracao.get("confrontacoes", 0),
-                "tempo_processamento": self.dados_geracao.get("tempo", 0),
-                "planta_gerada": self.dados_geracao.get("planta_gerada", False),
-                "modelo_ia_usado": self.dados_geracao.get("modelo", DEFAULT_MODEL)
-            }
+            "tipo": tipo_usuario,
+            "descricao": descricao_completa,
+            "processo": self.dados_geracao.get("processo")
+                        or self.dados_geracao.get("arquivo")
+                        or "N/A",
+            "modelo": self.dados_geracao.get("modelo", DEFAULT_MODEL),
+            "versao": APP_VERSION,
+            "detalhes_tecnicos": detalhes_tecnicos
         }
-        
+
         self.callback_envio(feedback_data)
         self.destroy()
-        
+
     def pular_feedback(self):
         self.destroy()
 
@@ -1744,7 +1629,7 @@ class App(tk.Tk):
 
         # Sistema de Feedback Inteligente
         self.feedback_system = initialize_feedback_system(
-            app_version="1.0.0",
+            app_version=APP_VERSION,
             modelo_llm=DEFAULT_MODEL
         )
 
@@ -2570,27 +2455,47 @@ class App(tk.Tk):
                         'outros': '📍'
                     }.get(lote_confronta.tipo, '📍')
 
-                    # Insere confrontante
-                    conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
-                        lote_confronta.matricula_anexada or "",
-                        lote_quadra,
-                        lote_confronta.tipo.title(),
-                        identificador,
-                        "",
-                        ""
-                    ))
+                    # Para lotes e matrículas: cria entrada especial mostrando identificador e proprietários
+                    if lote_confronta.tipo in ['lote', 'matricula'] and confrontante_obj and proprietarios and proprietarios[0] != "N/A":
+                        # Linha principal: mostra identificador do lote na coluna "Tipo" e proprietários na coluna "Proprietário"
+                        if len(proprietarios) == 1:
+                            proprietario_display = proprietarios[0]
+                        elif len(proprietarios) == 2:
+                            proprietario_display = f"{proprietarios[0]} e {proprietarios[1]}"
+                        else:
+                            proprietario_display = f"{proprietarios[0]} e mais {len(proprietarios)-1}"
 
-                    # Adiciona proprietários se houver matrícula anexada
-                    if confrontante_obj and len(proprietarios) > 0 and proprietarios[0] != "N/A":
-                        for proprietario in proprietarios:
-                            self.tree_results.insert(conf_id, "end", text="", values=(
-                                "",
-                                "",
-                                "",
-                                f"  👤 {proprietario}",
-                                "",
-                                ""
-                            ))
+                        # Insere linha mostrando lote e seus proprietários
+                        conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
+                            lote_confronta.matricula_anexada or "",
+                            lote_quadra,
+                            identificador,  # Ex: "lote 11" na coluna Tipo
+                            proprietario_display,  # Nomes dos proprietários na coluna Proprietário
+                            "",
+                            ""
+                        ))
+
+                        # Para lotes com mais de 2 proprietários, adiciona todos como sub-itens para clareza
+                        if len(proprietarios) > 2:
+                            for proprietario in proprietarios:
+                                self.tree_results.insert(conf_id, "end", text="", values=(
+                                    "",
+                                    "",
+                                    "",
+                                    f"  👤 {proprietario}",
+                                    "",
+                                    ""
+                                ))
+                    else:
+                        # Para outros tipos (ruas, estado, etc): comportamento normal
+                        conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
+                            lote_confronta.matricula_anexada or "",
+                            lote_quadra,
+                            lote_confronta.tipo.title(),
+                            identificador,  # Nome da rua, estado, etc. na coluna Proprietário
+                            "",
+                            ""
+                        ))
 
         # Fallback: Insere matrículas confrontantes antigas (caso não haja lotes_confrontantes)
         elif result.matriculas_confrontantes:
@@ -2637,49 +2542,64 @@ class App(tk.Tk):
                         ""   # Confiança só na principal
                     ))
 
-        # Insere matrículas NÃO confrontantes (se houver)
-        for mat_num in result.matriculas_nao_confrontantes:
-            # Encontra dados da matrícula não confrontante
-            nao_confrontante_obj = None
-            for mat in result.matriculas_encontradas:
-                if mat.numero == mat_num:
-                    nao_confrontante_obj = mat
-                    break
-            
-            proprietarios_nao_confrontante = nao_confrontante_obj.proprietarios if nao_confrontante_obj else ["N/A"]
-            if not proprietarios_nao_confrontante:
-                proprietarios_nao_confrontante = ["N/A"]
-            
-            # Formata informação de lote/quadra
-            lote_quadra_nao_confrontante = ""
-            if nao_confrontante_obj and (nao_confrontante_obj.lote or nao_confrontante_obj.quadra):
-                lote_parts = []
-                if nao_confrontante_obj.lote:
-                    lote_parts.append(f"Lote {nao_confrontante_obj.lote}")
-                if nao_confrontante_obj.quadra:
-                    lote_parts.append(f"Quadra {nao_confrontante_obj.quadra}")
-                lote_quadra_nao_confrontante = " / ".join(lote_parts)
-            
-            # Primeira linha da matrícula não confrontante
-            nao_conf_id = self.tree_results.insert(principal_id, "end", text="  ⚬", values=(
-                mat_num,
-                lote_quadra_nao_confrontante,
-                "Não Confrontante",
-                proprietarios_nao_confrontante[0],
-                "",  # Estado MS só na principal
-                ""   # Confiança só na principal
+        # Insere seção de LOTES NÃO CONFRONTANTES (se houver)
+        if result.matriculas_nao_confrontantes:
+            # Cria nó da seção de não confrontantes
+            nao_confrontantes_id = self.tree_results.insert(principal_id, "end", text="📋", values=(
+                "",
+                "",
+                "📋 LOTES NÃO CONFRONTANTES",
+                f"{len(result.matriculas_nao_confrontantes)} lote(s) anexado(s)",
+                "",
+                ""
             ))
-            
-            # Linhas adicionais para outros proprietários
-            for proprietario in proprietarios_nao_confrontante[1:]:
-                self.tree_results.insert(nao_conf_id, "end", text="", values=(
-                    "",  # Matrícula vazia
-                    "",  # Lote/Quadra vazio
-                    "",  # Tipo vazio
-                    proprietario,
-                    "",  # Estado MS só na principal
-                    ""   # Confiança só na principal
+
+            for mat_num in result.matriculas_nao_confrontantes:
+                # Encontra dados da matrícula não confrontante
+                nao_confrontante_obj = None
+                for mat in result.matriculas_encontradas:
+                    if mat.numero == mat_num:
+                        nao_confrontante_obj = mat
+                        break
+
+                proprietarios_nao_confrontante = nao_confrontante_obj.proprietarios if nao_confrontante_obj else ["N/A"]
+                if not proprietarios_nao_confrontante:
+                    proprietarios_nao_confrontante = ["N/A"]
+
+                # Formata informação de lote/quadra
+                lote_quadra_nao_confrontante = ""
+                if nao_confrontante_obj and (nao_confrontante_obj.lote or nao_confrontante_obj.quadra):
+                    lote_parts = []
+                    if nao_confrontante_obj.lote:
+                        lote_parts.append(f"Lote {nao_confrontante_obj.lote}")
+                    if nao_confrontante_obj.quadra:
+                        lote_parts.append(f"Quadra {nao_confrontante_obj.quadra}")
+                    lote_quadra_nao_confrontante = " / ".join(lote_parts)
+
+                # Define identificador do lote
+                identificador_lote = f"Lote {nao_confrontante_obj.lote}" if nao_confrontante_obj and nao_confrontante_obj.lote else f"Matrícula {mat_num}"
+
+                # Primeira linha da matrícula não confrontante
+                nao_conf_id = self.tree_results.insert(nao_confrontantes_id, "end", text="    🏘️", values=(
+                    mat_num,
+                    lote_quadra_nao_confrontante,
+                    "Lote",
+                    identificador_lote,
+                    "",
+                    ""
                 ))
+
+                # Adiciona proprietários como sub-itens
+                if proprietarios_nao_confrontante and proprietarios_nao_confrontante[0] != "N/A":
+                    for proprietario in proprietarios_nao_confrontante:
+                        self.tree_results.insert(nao_conf_id, "end", text="", values=(
+                            "",
+                            "",
+                            "",
+                            f"  👤 {proprietario}",
+                            "",
+                            ""
+                        ))
 
         # Nota: lotes_sem_matricula agora são incluídos em lotes_confrontantes
         # sem necessidade de marcar como "faltantes" separadamente
@@ -2747,39 +2667,162 @@ class App(tk.Tk):
         if not result.matricula_principal:
             self.set_summary_text("Dados insuficientes para análise.")
             return
-        
+
         # Encontra dados da matrícula principal
         matricula_principal_obj = None
         for mat in result.matriculas_encontradas:
             if mat.numero == result.matricula_principal:
                 matricula_principal_obj = mat
                 break
-        
+
         if not matricula_principal_obj:
             self.set_summary_text("Dados da matrícula principal não encontrados.")
             return
-        
-        # Monta o resumo automático
-        proprietarios = " e ".join(matricula_principal_obj.proprietarios)
-        
-        confrontantes_str = ""
-        if result.matriculas_confrontantes:
-            if len(result.matriculas_confrontantes) <= 3:
-                confrontantes_str = ", ".join(result.matriculas_confrontantes)
-            else:
-                confrontantes_str = ", ".join(result.matriculas_confrontantes[:3]) + f" e mais {len(result.matriculas_confrontantes) - 3}"
-        else:
-            confrontantes_str = "nenhuma matrícula confrontante identificada"
-        
+
+        # Dados básicos
+        proprietarios = " e ".join(matricula_principal_obj.proprietarios) if matricula_principal_obj.proprietarios else "Não identificado"
         confianca = int(result.confidence * 100) if result.confidence is not None and result.confidence <= 1 else int(result.confidence) if result.confidence is not None else 0
-        
-        resumo = (
-            f"🎯 RESUMO AUTOMÁTICO (Confiança: {confianca}%)\n\n"
-            f"A matrícula nº {result.matricula_principal}, registrada em nome de {proprietarios}, "
-            f"possui como confrontantes as matrículas {confrontantes_str}. "
-            f"O resultado da análise apresentou índice de confiança de {confianca}%."
-        )
-        
+
+        # Informações do lote/quadra
+        lote_quadra = ""
+        if matricula_principal_obj.lote or matricula_principal_obj.quadra:
+            lote_parts = []
+            if matricula_principal_obj.lote:
+                lote_parts.append(f"Lote {matricula_principal_obj.lote}")
+            if matricula_principal_obj.quadra:
+                lote_parts.append(f"Quadra {matricula_principal_obj.quadra}")
+            lote_quadra = f" ({', '.join(lote_parts)})"
+
+        # Análise de confrontantes
+        total_confrontantes = len(result.lotes_confrontantes) if result.lotes_confrontantes else 0
+        confrontacao_adequada = "✅ Adequada" if total_confrontantes >= 4 else f"⚠️ Insuficiente ({total_confrontantes} de 4 mínimos)"
+
+        # Confrontantes por tipo
+        tipos_confrontantes = {}
+        if result.lotes_confrontantes:
+            for conf in result.lotes_confrontantes:
+                tipo = conf.tipo
+                if tipo not in tipos_confrontantes:
+                    tipos_confrontantes[tipo] = 0
+                tipos_confrontantes[tipo] += 1
+
+        # Estado de MS
+        estado_ms_confrontante = False
+        estado_ms_direitos = False
+
+        if result.lotes_confrontantes:
+            for conf in result.lotes_confrontantes:
+                if 'estado' in conf.identificador.lower() or 'mato grosso' in conf.identificador.lower():
+                    estado_ms_confrontante = True
+                    break
+
+        if result.resumo_analise and hasattr(result.resumo_analise, 'estado_ms_direitos'):
+            estado_ms_direitos = result.resumo_analise.estado_ms_direitos.get('tem_direitos', False)
+
+        # Cadeia dominial
+        cadeia_info = ""
+        if result.resumo_analise and hasattr(result.resumo_analise, 'cadeia_dominial_completa'):
+            cadeia_data = result.resumo_analise.cadeia_dominial_completa
+            if cadeia_data and result.matricula_principal in cadeia_data:
+                historico = cadeia_data[result.matricula_principal]
+                if historico and len(historico) > 1:
+                    cadeia_info = f"\n📋 Cadeia dominial: {len(historico)} transmissões identificadas"
+
+        # Restrições
+        restricoes_info = ""
+        if result.resumo_analise:
+            restricoes_vigentes = getattr(result.resumo_analise, 'restricoes_vigentes', [])
+            restricoes_baixadas = getattr(result.resumo_analise, 'restricoes_baixadas', [])
+
+            if restricoes_vigentes:
+                restricoes_info += f"\n⚠️ {len(restricoes_vigentes)} restrição(ões) vigente(s)"
+            if restricoes_baixadas:
+                restricoes_info += f"\n✅ {len(restricoes_baixadas)} restrição(ões) baixada(s)"
+
+        # Monta o resumo completo
+        resumo_partes = [
+            f"🎯 RESUMO DA ANÁLISE (Confiança: {confianca}%)",
+            "",
+            f"📋 MATRÍCULA PRINCIPAL: {result.matricula_principal}{lote_quadra}",
+            f"👤 PROPRIETÁRIO(S): {proprietarios}",
+            "",
+            f"🧭 CONFRONTAÇÃO: {confrontacao_adequada}",
+            f"📊 Total de confrontantes: {total_confrontantes}"
+        ]
+
+        # Adiciona detalhes dos tipos de confrontantes
+        if tipos_confrontantes:
+            resumo_partes.append("📍 Tipos identificados:")
+            for tipo, qtd in tipos_confrontantes.items():
+                emoji = {'lote': '🏘️', 'via_publica': '🛣️', 'estado': '🏛️', 'pessoa': '👤', 'outros': '📍'}.get(tipo, '📍')
+                resumo_partes.append(f"   {emoji} {tipo.replace('_', ' ').title()}: {qtd}")
+
+        # Informações sobre proprietários dos lotes confrontantes
+        lotes_com_proprietarios = []
+        if result.lotes_confrontantes:
+            for conf in result.lotes_confrontantes:
+                if conf.tipo in ['lote', 'matricula'] and conf.matricula_anexada:
+                    # Encontra dados da matrícula confrontante
+                    confrontante_obj = None
+                    for mat in result.matriculas_encontradas:
+                        if mat.numero == conf.matricula_anexada:
+                            confrontante_obj = mat
+                            break
+
+                    if confrontante_obj and confrontante_obj.proprietarios and confrontante_obj.proprietarios[0] != "N/A":
+                        proprietarios_texto = ", ".join(confrontante_obj.proprietarios) if len(confrontante_obj.proprietarios) <= 2 else f"{confrontante_obj.proprietarios[0]} e mais {len(confrontante_obj.proprietarios)-1}"
+                        lotes_com_proprietarios.append(f"   • {conf.identificador}: {proprietarios_texto}")
+
+        if lotes_com_proprietarios:
+            resumo_partes.append("")
+            resumo_partes.append("👥 PROPRIETÁRIOS DOS LOTES CONFRONTANTES:")
+            resumo_partes.extend(lotes_com_proprietarios[:5])  # Máximo 5 para não poluir
+            if len(lotes_com_proprietarios) > 5:
+                resumo_partes.append(f"   • ... e mais {len(lotes_com_proprietarios) - 5} lotes")
+
+        # Status do Estado de MS
+        resumo_partes.append("")
+        if estado_ms_confrontante:
+            resumo_partes.append("🏛️ Estado de MS: ✅ Identificado como confrontante")
+        elif estado_ms_direitos:
+            resumo_partes.append("🏛️ Estado de MS: ⚠️ Possui direitos registrados")
+        else:
+            resumo_partes.append("🏛️ Estado de MS: ✅ Não identificado")
+
+        # Adiciona informações complementares
+        if cadeia_info:
+            resumo_partes.append(cadeia_info)
+
+        if restricoes_info:
+            resumo_partes.append(restricoes_info)
+
+        # Lotes não confrontantes
+        if result.matriculas_nao_confrontantes:
+            lotes_nao_confrontantes_info = []
+            for mat_num in result.matriculas_nao_confrontantes:
+                # Encontra dados da matrícula não confrontante
+                nao_confrontante_obj = None
+                for mat in result.matriculas_encontradas:
+                    if mat.numero == mat_num:
+                        nao_confrontante_obj = mat
+                        break
+
+                if nao_confrontante_obj and nao_confrontante_obj.proprietarios and nao_confrontante_obj.proprietarios[0] != "N/A":
+                    identificador = f"Lote {nao_confrontante_obj.lote}" if nao_confrontante_obj.lote else f"Matrícula {mat_num}"
+                    proprietarios_texto = ", ".join(nao_confrontante_obj.proprietarios) if len(nao_confrontante_obj.proprietarios) <= 2 else f"{nao_confrontante_obj.proprietarios[0]} e mais {len(nao_confrontante_obj.proprietarios)-1}"
+                    lotes_nao_confrontantes_info.append(f"   • {identificador}: {proprietarios_texto}")
+
+            if lotes_nao_confrontantes_info:
+                resumo_partes.append("")
+                resumo_partes.append("📋 LOTES NÃO CONFRONTANTES ANEXADOS:")
+                resumo_partes.extend(lotes_nao_confrontantes_info[:3])  # Máximo 3
+                if len(lotes_nao_confrontantes_info) > 3:
+                    resumo_partes.append(f"   • ... e mais {len(lotes_nao_confrontantes_info) - 3} lotes")
+
+        # Matrículas encontradas
+        resumo_partes.append(f"\n📄 Total de matrículas analisadas: {len(result.matriculas_encontradas)}")
+
+        resumo = "\n".join(resumo_partes)
         self.set_summary_text(resumo)
 
     def set_summary_text(self, text):
@@ -3267,55 +3310,137 @@ RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, 
                 return None
         return None
 
-    def _add_measurements_and_labels(self, ax, coords: List[Tuple[float, float]], 
+    def _add_measurements_and_labels(self, ax, coords: List[Tuple[float, float]],
                                    medidas: Dict, confrontantes: Dict):
-        """Adiciona medidas e rótulos de confrontantes na planta"""
+        """Adiciona medidas e rótulos de confrontantes na planta sem sobreposição"""
         try:
             n_coords = len(coords)
             if n_coords < 3:
                 return
-                
-            sides = ['frente', 'lado_direito', 'fundos', 'lado_esquerdo']
-            confronts = ['frente', 'direita', 'fundos', 'esquerda']
-            
+
+            # Mapeamento mais robusto baseado na posição real das linhas
             for i in range(n_coords):
                 p1 = coords[i]
                 p2 = coords[(i + 1) % n_coords]
-                
-                # Calcula ponto médio da linha
+
+                # Calcula ponto médio e direção da linha
                 mid_x = (p1[0] + p2[0]) / 2
                 mid_y = (p1[1] + p2[1]) / 2
-                
-                # Determina o lado baseado na posição
-                side_idx = i % len(sides)
-                side_name = sides[side_idx]
-                confront_name = confronts[side_idx]
-                
-                # Adiciona medida
-                if side_name in medidas and medidas[side_name]:
-                    measure_text = str(medidas[side_name])
-                    # Ajusta posição do texto baseado na orientação da linha
-                    if abs(p2[0] - p1[0]) > abs(p2[1] - p1[1]):  # Linha horizontal
-                        ax.text(mid_x, mid_y - 2, measure_text, ha='center', va='top', 
-                               fontsize=10, fontweight='bold', color='blue')
-                    else:  # Linha vertical
-                        ax.text(mid_x - 2, mid_y, measure_text, ha='right', va='center',
-                               fontsize=10, fontweight='bold', color='blue', rotation=90)
-                
-                # Adiciona confrontante
-                confront_text = confrontantes.get(confront_name, '')
+
+                # Calcula vetor da linha e sua orientação
+                dx = p2[0] - p1[0]
+                dy = p2[1] - p1[1]
+                line_length = (dx**2 + dy**2)**0.5
+
+                if line_length == 0:
+                    continue
+
+                # Vetor normal (perpendicular) à linha
+                normal_x = -dy / line_length
+                normal_y = dx / line_length
+
+                # Determina qual lado é baseado na posição
+                side_name, confront_key = self._determine_side_from_position(i, n_coords, dx, dy)
+
+                # Distâncias para evitar sobreposição
+                measure_offset = 3  # Distância para medidas
+                confront_offset = 8  # Distância para confrontantes (mais longe)
+
+                # Adiciona medida se disponível
+                measure_text = self._get_measurement_text(medidas, side_name)
+                if measure_text:
+                    # Posição da medida: mais próxima do terreno
+                    measure_x = mid_x + normal_x * measure_offset
+                    measure_y = mid_y + normal_y * measure_offset
+
+                    # Determina rotação para texto de medida
+                    angle = math.degrees(math.atan2(dy, dx))
+                    if abs(angle) > 90:
+                        angle -= 180
+
+                    ax.text(measure_x, measure_y, measure_text, ha='center', va='center',
+                           fontsize=9, fontweight='bold', color='blue',
+                           rotation=angle,
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+
+                # Adiciona confrontante se disponível
+                confront_text = self._get_confrontant_text(confrontantes, confront_key)
                 if confront_text:
-                    # Posiciona o texto de confrontante um pouco mais afastado
-                    offset = 5
-                    if abs(p2[0] - p1[0]) > abs(p2[1] - p1[1]):  # Linha horizontal
-                        ax.text(mid_x, mid_y + offset, confront_text, ha='center', va='bottom',
-                               fontsize=8, style='italic', color='green')
-                    else:  # Linha vertical
-                        ax.text(mid_x + offset, mid_y, confront_text, ha='left', va='center',
-                               fontsize=8, style='italic', color='green', rotation=90)
-                        
+                    # Posição do confrontante: mais afastada do terreno
+                    confront_x = mid_x + normal_x * confront_offset
+                    confront_y = mid_y + normal_y * confront_offset
+
+                    # Trunca texto longo para evitar poluição visual
+                    if len(confront_text) > 25:
+                        confront_text = confront_text[:22] + "..."
+
+                    ax.text(confront_x, confront_y, confront_text, ha='center', va='center',
+                           fontsize=8, style='italic', color='darkgreen',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
+
         except Exception as e:
             print(f"❌ Erro ao adicionar medidas: {e}")
+
+    def _determine_side_from_position(self, index: int, total_coords: int, dx: float, dy: float) -> Tuple[str, str]:
+        """Determina o lado baseado na posição e direção da linha"""
+        # Para terrenos retangulares (4 lados)
+        if total_coords == 4:
+            sides_map = [
+                ('frente', 'frente'),           # Lado inferior (0->1)
+                ('lateral_direita', 'direita'), # Lado direito (1->2)
+                ('fundos', 'fundos'),           # Lado superior (2->3)
+                ('lateral_esquerda', 'esquerda') # Lado esquerdo (3->0)
+            ]
+            return sides_map[index % 4]
+
+        # Para outros formatos, usa heurística baseada na direção
+        if abs(dx) > abs(dy):  # Linha mais horizontal
+            if dx > 0:
+                return ('frente', 'frente')
+            else:
+                return ('fundos', 'fundos')
+        else:  # Linha mais vertical
+            if dy > 0:
+                return ('lateral_direita', 'direita')
+            else:
+                return ('lateral_esquerda', 'esquerda')
+
+    def _get_measurement_text(self, medidas: Dict, side_name: str) -> str:
+        """Obtém texto de medida para um lado específico"""
+        # Tenta várias variações do nome do lado
+        possible_keys = [
+            side_name,
+            side_name.replace('lateral_', ''),
+            side_name.replace('_', ' '),
+            side_name.split('_')[-1] if '_' in side_name else side_name
+        ]
+
+        for key in possible_keys:
+            if key in medidas and medidas[key]:
+                value = str(medidas[key])
+                # Limpa e formata a medida
+                import re
+                numbers = re.findall(r'(\d+(?:[,\.]\d+)?)', value)
+                if numbers:
+                    return f"{numbers[0]}m"
+                return value
+        return ""
+
+    def _get_confrontant_text(self, confrontantes: Dict, confront_key: str) -> str:
+        """Obtém texto de confrontante para uma direção específica"""
+        # Tenta várias variações da direção
+        possible_keys = [
+            confront_key,
+            f"lateral_{confront_key}",
+            f"lado_{confront_key}",
+            confront_key.replace('direita', 'lateral_direita'),
+            confront_key.replace('esquerda', 'lateral_esquerda')
+        ]
+
+        for key in possible_keys:
+            if key in confrontantes and confrontantes[key]:
+                return str(confrontantes[key])
+        return ""
 
     def _draw_generic_plot(self, ax, matricula: MatriculaInfo):
         """Desenha terreno genérico quando não há dados geométricos suficientes"""
@@ -3339,51 +3464,109 @@ RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, 
             print(f"❌ Erro ao desenhar planta genérica: {e}")
 
     def _add_plant_legend(self, ax, matricula: MatriculaInfo):
-        """Adiciona legenda e informações na planta"""
+        """Adiciona legenda e informações na planta sem sobreposição"""
         try:
-            # Adiciona caixa de informações no canto
-            info_text = f"PROPRIETÁRIO(S):\n"
-            for prop in matricula.proprietarios[:3]:  # Máximo 3 para não poluir
-                info_text += f"• {prop}\n"
-            if len(matricula.proprietarios) > 3:
-                info_text += f"• ... e mais {len(matricula.proprietarios) - 3}\n"
-                
+            # Calcula limites atuais do gráfico para posicionamento inteligente
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+
+            # Cria informações da legenda de forma compacta
+            info_lines = []
+
+            # Proprietários (máximo 2 para economizar espaço)
+            if matricula.proprietarios:
+                if len(matricula.proprietarios) == 1:
+                    info_lines.append(f"PROPRIETÁRIO: {matricula.proprietarios[0][:30]}")
+                elif len(matricula.proprietarios) == 2:
+                    info_lines.append(f"PROPRIETÁRIOS:")
+                    info_lines.append(f"• {matricula.proprietarios[0][:25]}")
+                    info_lines.append(f"• {matricula.proprietarios[1][:25]}")
+                else:
+                    info_lines.append(f"PROPRIETÁRIOS: {matricula.proprietarios[0][:20]} e mais {len(matricula.proprietarios)-1}")
+
+            # Área total se disponível
             if matricula.dados_geometricos and matricula.dados_geometricos.area_total:
-                info_text += f"\nÁREA TOTAL: {matricula.dados_geometricos.area_total}"
-            
-            # Posiciona a legenda no canto superior direito
-            ax.text(0.98, 0.98, info_text, transform=ax.transAxes, fontsize=9,
-                   verticalalignment='top', horizontalalignment='right',
-                   bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8))
-            
-            # Adiciona rosa dos ventos simples
+                area_text = str(matricula.dados_geometricos.area_total)
+                if 'm²' not in area_text and 'm2' not in area_text:
+                    area_text += " m²"
+                info_lines.append(f"ÁREA: {area_text}")
+
+            # Lote e quadra
+            if matricula.lote or matricula.quadra:
+                lote_info = []
+                if matricula.lote:
+                    lote_info.append(f"Lote {matricula.lote}")
+                if matricula.quadra:
+                    lote_info.append(f"Quadra {matricula.quadra}")
+                info_lines.append(" / ".join(lote_info))
+
+            if info_lines:
+                info_text = "\n".join(info_lines)
+
+                # Posiciona no canto superior esquerdo para evitar conflito com medidas
+                ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=8,
+                       verticalalignment='top', horizontalalignment='left',
+                       bbox=dict(boxstyle="round,pad=0.4", facecolor="lightblue", alpha=0.9))
+
+            # Adiciona rosa dos ventos no canto inferior direito
             self._add_compass_rose(ax)
-            
+
+            # Adiciona legenda de cores no canto inferior esquerdo
+            self._add_color_legend(ax)
+
         except Exception as e:
             print(f"❌ Erro ao adicionar legenda: {e}")
 
     def _add_compass_rose(self, ax):
-        """Adiciona rosa dos ventos simples"""
+        """Adiciona rosa dos ventos compacta"""
         try:
             # Posiciona no canto inferior direito
-            compass_x = 0.9
-            compass_y = 0.1
-            
-            # Desenha setas dos pontos cardeais
-            arrow_props = dict(arrowstyle='->', lw=1.5, color='red')
-            
-            # Norte (para cima)
-            ax.annotate('N', xy=(compass_x, compass_y + 0.05), xytext=(compass_x, compass_y),
-                       transform=ax.transAxes, ha='center', va='bottom',
-                       arrowprops=arrow_props, fontweight='bold', color='red')
-            
-            # Leste (para direita)  
-            ax.annotate('L', xy=(compass_x + 0.03, compass_y), xytext=(compass_x, compass_y),
-                       transform=ax.transAxes, ha='left', va='center',
-                       arrowprops=arrow_props, fontweight='bold', color='red')
-            
+            compass_x = 0.95
+            compass_y = 0.05
+
+            # Desenha cruz simples com pontos cardeais
+            ax.text(compass_x, compass_y + 0.03, 'N', transform=ax.transAxes,
+                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
+            ax.text(compass_x + 0.025, compass_y, 'L', transform=ax.transAxes,
+                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
+            ax.text(compass_x, compass_y - 0.03, 'S', transform=ax.transAxes,
+                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
+            ax.text(compass_x - 0.025, compass_y, 'O', transform=ax.transAxes,
+                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
+
+            # Linhas da cruz
+            ax.plot([compass_x, compass_x], [compass_y - 0.025, compass_y + 0.025],
+                   transform=ax.transAxes, color='red', linewidth=1)
+            ax.plot([compass_x - 0.02, compass_x + 0.02], [compass_y, compass_y],
+                   transform=ax.transAxes, color='red', linewidth=1)
+
         except Exception as e:
             print(f"❌ Erro ao adicionar rosa dos ventos: {e}")
+
+    def _add_color_legend(self, ax):
+        """Adiciona legenda de cores"""
+        try:
+            legend_text = "LEGENDA:\nMedidas\nConfrontantes"
+
+            ax.text(0.02, 0.15, legend_text, transform=ax.transAxes, fontsize=7,
+                   verticalalignment='top', horizontalalignment='left',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+            # Adiciona pequenos quadrados coloridos
+            from matplotlib.patches import Rectangle
+
+            # Quadrado azul para medidas
+            rect_blue = Rectangle((0.12, 0.11), 0.01, 0.008, transform=ax.transAxes,
+                                facecolor='blue', alpha=0.7)
+            ax.add_patch(rect_blue)
+
+            # Quadrado verde para confrontantes
+            rect_green = Rectangle((0.12, 0.08), 0.01, 0.008, transform=ax.transAxes,
+                                 facecolor='darkgreen', alpha=0.7)
+            ax.add_patch(rect_green)
+
+        except Exception as e:
+            print(f"❌ Erro ao adicionar legenda de cores: {e}")
 
     def _show_generated_image(self, image_url: str, prompt: str, progress_window: tk.Toplevel):
         """Mostra a imagem gerada"""

@@ -41,7 +41,6 @@ class FeedbackSystem:
             'modelo': os.getenv('GOOGLE_FORM_FIELD_MODELO', 'entry.5566778899'),
             'timestamp': os.getenv('GOOGLE_FORM_FIELD_TIMESTAMP', 'entry.9988776655'),
             'versao': os.getenv('GOOGLE_FORM_FIELD_VERSAO', 'entry.1357924680'),
-            'processo': os.getenv('GOOGLE_FORM_FIELD_PROCESSO', 'entry.1122334455')
         }
 
         # Arquivo de feedback local (backup/debug)
@@ -297,7 +296,6 @@ class FeedbackSystem:
             form_data = {
                 self.form_fields['tipo']: feedback_data['tipo'],
                 self.form_fields['descricao']: feedback_data['descricao'],
-                self.form_fields['processo']: feedback_data['processo'],
                 self.form_fields['modelo']: feedback_data['modelo'],
                 self.form_fields['timestamp']: feedback_data['timestamp'],
                 self.form_fields['versao']: feedback_data['versao']

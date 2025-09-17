@@ -38,22 +38,17 @@ Enviado automaticamente quando:
 - **Título**: "Descrição do Problema"
 - **Obrigatório**: Sim
 
-#### Campo 3: Processo
-- **Tipo**: Resposta curta
-- **Título**: "Número do Processo"
-- **Obrigatório**: Não
-
-#### Campo 4: Modelo LLM
+#### Campo 3: Modelo LLM
 - **Tipo**: Resposta curta
 - **Título**: "Modelo LLM Utilizado"
 - **Obrigatório**: Não
 
-#### Campo 5: Data e Hora
+#### Campo 4: Data e Hora
 - **Tipo**: Resposta curta
 - **Título**: "Data e Hora"
 - **Obrigatório**: Não
 
-#### Campo 6: Versão
+#### Campo 5: Versão
 - **Tipo**: Resposta curta
 - **Título**: "Versão do Sistema"
 - **Obrigatório**: Não
@@ -81,7 +76,6 @@ Enviado automaticamente quando:
 GOOGLE_FORM_URL=https://docs.google.com/forms/d/SEU_FORM_ID/formResponse
 GOOGLE_FORM_FIELD_TIPO=entry.123456789
 GOOGLE_FORM_FIELD_DESCRICAO=entry.987654321
-GOOGLE_FORM_FIELD_PROCESSO=entry.456789123
 GOOGLE_FORM_FIELD_MODELO=entry.789123456
 GOOGLE_FORM_FIELD_TIMESTAMP=entry.321654987
 GOOGLE_FORM_FIELD_VERSAO=entry.147258369
@@ -99,8 +93,7 @@ GOOGLE_FORM_FIELD_VERSAO=entry.147258369
 ```json
 {
   "tipo": "SUCESSO_AUTO",
-  "descricao": "Relatório do processo 12345 gerado sem problemas reportados - novo relatório iniciado",
-  "processo": "12345",
+  "descricao": "Relatorio do processo 12345 gerado sem problemas reportados - novo relatorio iniciado",
   "modelo": "google/gemini-2.5-pro",
   "timestamp": "2024-01-15 14:30:25",
   "versao": "1.0.0"
@@ -111,8 +104,7 @@ GOOGLE_FORM_FIELD_VERSAO=entry.147258369
 ```json
 {
   "tipo": "ERRO",
-  "descricao": "A matrícula 67890 não foi identificada corretamente no texto",
-  "processo": "12345",
+  "descricao": "A matricula 67890 nao foi identificada corretamente no texto",
   "modelo": "google/gemini-2.5-pro",
   "timestamp": "2024-01-15 14:35:10",
   "versao": "1.0.0"
