@@ -10,6 +10,9 @@ pdf2image>=1.17.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 
+# Auto-atualização
+packaging>=23.0
+
 # Image Generation & Processing (para geração de plantas)
 Pillow>=10.0.0  # Já incluído acima, mas essencial para ImageTk
 

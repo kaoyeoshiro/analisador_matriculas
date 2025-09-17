@@ -35,6 +35,9 @@ import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# --- Auto-atualização ---
+from updater import create_updater
+
 # =========================u
 # Configuração
 # =========================
@@ -1725,12 +1728,18 @@ class App(tk.Tk):
         self.files: List[str] = []
         self.results: Dict[str, AnalysisResult] = {}
         self.queue = queue.Queue()
-        
+
         # Sistema de Feedback
         self.feedback_manager = FeedbackManager()
 
+        # Sistema de Auto-atualização
+        self.updater = create_updater()
+
         self.create_widgets()
         self.poll_queue()
+
+        # Inicia verificação de atualizações após 2 segundos
+        self.after(2000, self.check_for_updates)
 
     def create_widgets(self):
         # Top frame (controles)
@@ -1784,6 +1793,9 @@ class App(tk.Tk):
         
         self.btn_generate_plant = ttk.Button(top, text="Gerar Planta", command=self.generate_property_plant)
         self.btn_generate_plant.pack(side="left", padx=(8,0))
+
+        self.btn_update = ttk.Button(top, text="Verificar Atualizações", command=self.manual_check_updates)
+        self.btn_update.pack(side="right", padx=(8,0))
 
         # Progress bar
         self.progress = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=220)
@@ -2195,9 +2207,54 @@ class App(tk.Tk):
             "lote": matricula.lote,
             "quadra": matricula.quadra
         }
-        
+
         # Agenda feedback para depois da planta ser exibida
         self.after(3000, lambda: self.feedback_manager.solicitar_feedback(self, dados_geracao))
+
+    def check_for_updates(self):
+        """Verifica e aplica atualizações automaticamente em background"""
+        def update_thread():
+            try:
+                self.updater.update_if_available()
+            except Exception as e:
+                pass
+
+        # Executa em thread separada para não bloquear a interface
+        threading.Thread(target=update_thread, daemon=True).start()
+
+    def manual_check_updates(self):
+        """Verificação manual de atualizações com feedback ao usuário"""
+        def update_thread():
+            try:
+                update_info = self.updater.check_for_updates()
+                if update_info:
+                    response = messagebox.askyesno(
+                        "Atualização Disponível",
+                        f"Nova versão {update_info['version']} disponível!\n\n"
+                        "Deseja atualizar agora?",
+                        parent=self
+                    )
+                    if response:
+                        messagebox.showinfo(
+                            "Atualizando",
+                            "O aplicativo será atualizado e reiniciado automaticamente.",
+                            parent=self
+                        )
+                        self.updater.update_if_available()
+                else:
+                    messagebox.showinfo(
+                        "Atualizado",
+                        "Você já está usando a versão mais recente!",
+                        parent=self
+                    )
+            except Exception as e:
+                messagebox.showerror(
+                    "Erro de Atualização",
+                    f"Erro ao verificar atualizações: {e}",
+                    parent=self
+                )
+
+        threading.Thread(target=update_thread, daemon=True).start()
 
     def populate_results_tree(self, result):
         """Popula a tabela com estrutura hierárquica: principal + confrontantes + não confrontantes"""

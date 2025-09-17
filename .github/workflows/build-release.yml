@@ -1,0 +1,99 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller packaging
+
+    - name: Generate version number
+      id: version
+      run: |
+        $version = "1.0.${{ github.run_number }}"
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo $version | Out-File -FilePath VERSION -Encoding utf8 -NoNewline
+        echo "Generated version: $version"
+      shell: powershell
+
+    - name: Build executable with PyInstaller
+      run: |
+        pyinstaller --clean --noconfirm Matriculas_Confrontantes_PGE_MS.spec
+
+    - name: Verify build output
+      run: |
+        if (Test-Path "dist\RelatorioTJMS.exe") {
+          Write-Host "Build successful - executable found"
+          $size = (Get-Item "dist\RelatorioTJMS.exe").length
+          Write-Host "Executable size: $([math]::Round($size/1MB,2)) MB"
+        } else {
+          Write-Host "Build failed - executable not found"
+          exit 1
+        }
+      shell: powershell
+
+    - name: Copy VERSION file to dist
+      run: |
+        Copy-Item VERSION dist\
+      shell: powershell
+
+    - name: Create release on push to main/master
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.VERSION }}
+        name: Release v${{ steps.version.outputs.VERSION }}
+        body: |
+          ## Versão v${{ steps.version.outputs.VERSION }}
+
+          ### Atualizações Automáticas
+          ✅ Build automático #${{ github.run_number }}
+          🔄 Sistema de auto-atualização ativo
+          📦 Executável gerado automaticamente
+
+          ### Como Usar
+          1. Baixe o arquivo `RelatorioTJMS.exe`
+          2. Execute o arquivo baixado
+          3. O sistema verificará automaticamente por atualizações
+
+          ### Notas Técnicas
+          - Gerado automaticamente via GitHub Actions
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - Timestamp: ${{ github.event.head_commit.timestamp }}
+
+          ---
+          🤖 Release gerada automaticamente pelo GitHub Actions
+        draft: false
+        prerelease: false
+        files: |
+          dist/RelatorioTJMS.exe
+          VERSION
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts-v${{ steps.version.outputs.VERSION }}
+        path: |
+          dist/RelatorioTJMS.exe
+          VERSION
+        retention-days: 30
