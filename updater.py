@@ -47,13 +47,34 @@ class AutoUpdater:
         elif self.is_executable:
             self.executable_name = os.path.basename(sys.executable)
         else:
-            self.executable_name = "main.exe"
+            self.executable_name = "RelatorioTJMS.exe"  # Nome padrão
 
-        # Diretório base do aplicativo
+        # Detecta o caminho real do executável atual
         if self.is_executable:
+            # Se está rodando como executável, usa o caminho real
+            self.current_exe_path = sys.executable
             self.app_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
+            # Se não é executável, procura pelo executável no diretório
             self.app_dir = os.path.dirname(os.path.abspath(__file__))
+
+            # Procura o executável em vários locais possíveis
+            possible_paths = [
+                os.path.join(self.app_dir, self.executable_name),
+                os.path.join(self.app_dir, "dist", self.executable_name),
+                os.path.join(os.getcwd(), self.executable_name),
+                os.path.join(os.getcwd(), "dist", self.executable_name),
+            ]
+
+            self.current_exe_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    self.current_exe_path = path
+                    break
+
+            # Se não encontrou, usa o caminho padrão (será verificado depois)
+            if not self.current_exe_path:
+                self.current_exe_path = os.path.join(self.app_dir, self.executable_name)
 
         # Garante que o diretório existe
         if not os.path.exists(self.app_dir):
@@ -70,6 +91,8 @@ class AutoUpdater:
             print(f"[AutoUpdater] Versão atual: {self.current_version}")
             print(f"[AutoUpdater] Executável: {self.executable_name}")
             print(f"[AutoUpdater] Diretório: {self.app_dir}")
+            print(f"[AutoUpdater] Caminho do executável: {self.current_exe_path}")
+            print(f"[AutoUpdater] É executável: {self.is_executable}")
 
     def _read_version_file(self) -> str:
         """Lê a versão do arquivo VERSION"""
@@ -199,11 +222,15 @@ class AutoUpdater:
             True se sucesso, False caso contrário
         """
         try:
-            current_exe = os.path.join(self.app_dir, self.executable_name)
+            # Usa o caminho pré-detectado no __init__
+            current_exe = self.current_exe_path
 
-            if not self.is_executable:
-                self._log("Não é possível aplicar atualização - não está rodando como executável")
-                return False
+            # Log detalhado para debug
+            self._log(f"Aplicando atualização...")
+            self._log(f"is_executable: {self.is_executable}")
+            self._log(f"app_dir: {self.app_dir}")
+            self._log(f"executable_name: {self.executable_name}")
+            self._log(f"current_exe_path: {current_exe}")
 
             # Verifica se os arquivos existem
             if not os.path.exists(downloaded_file):
@@ -212,9 +239,10 @@ class AutoUpdater:
 
             if not os.path.exists(current_exe):
                 self._log(f"Executável atual não encontrado: {current_exe}")
+                self._log("Falha na detecção do executável - cancelando atualização")
                 return False
 
-            self._log("Aplicando atualização...")
+            self._log(f"Aplicando atualização de: {current_exe}")
 
             # Usa caminhos curtos para evitar problemas com espaços
             import subprocess
