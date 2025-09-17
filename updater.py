@@ -274,66 +274,84 @@ class AutoUpdater:
                 downloaded_file_short = f'"{downloaded_file}"'
                 version_file_short = f'"{os.path.join(self.app_dir, "VERSION")}"'
 
-            # Cria script batch mais robusto
-            batch_content = f"""@echo off
-chcp 65001 > nul
-echo Aplicando atualizacao...
-timeout /t 2 /nobreak > nul
+            # Cria script PowerShell mais robusto (funciona melhor com caminhos)
+            powershell_content = f"""
+# Auto-update script
+$ErrorActionPreference = "Stop"
 
-echo Verificando arquivos...
-if not exist {downloaded_file_short} (
-    echo ERRO: Arquivo de atualizacao nao encontrado
-    echo Caminho: {downloaded_file_short}
-    pause
-    exit /b 1
-)
+Write-Host "Aplicando atualizacao..."
+Start-Sleep -Seconds 2
 
-if not exist {current_exe_short} (
-    echo ERRO: Executavel atual nao encontrado
-    echo Caminho: {current_exe_short}
-    pause
-    exit /b 1
-)
+$downloadedFile = "{downloaded_file}"
+$currentExe = "{current_exe}"
+$versionFile = "{os.path.join(self.app_dir, 'VERSION')}"
+$newVersion = "{update_info['version']}"
 
-echo Criando backup...
-copy {current_exe_short} {current_exe_short}.backup > nul 2>&1
+Write-Host "Verificando arquivos..."
 
-echo Aplicando nova versao...
-copy {downloaded_file_short} {current_exe_short} /Y
-if errorlevel 1 (
-    echo ERRO: Falha ao copiar nova versao
-    echo Restaurando backup...
-    copy {current_exe_short}.backup {current_exe_short} /Y > nul 2>&1
-    pause
-    exit /b 1
-)
+if (-not (Test-Path $downloadedFile)) {{
+    Write-Host "ERRO: Arquivo de atualizacao nao encontrado"
+    Write-Host "Caminho: $downloadedFile"
+    Read-Host "Pressione Enter para continuar"
+    exit 1
+}}
 
-echo Atualizando arquivo de versao...
-echo {update_info['version']} > {version_file_short}
+if (-not (Test-Path $currentExe)) {{
+    Write-Host "ERRO: Executavel atual nao encontrado"
+    Write-Host "Caminho: $currentExe"
+    Read-Host "Pressione Enter para continuar"
+    exit 1
+}}
 
-echo Limpando arquivos temporarios...
-del {downloaded_file_short} > nul 2>&1
-del {current_exe_short}.backup > nul 2>&1
+try {{
+    Write-Host "Criando backup..."
+    Copy-Item $currentExe "$currentExe.backup" -Force
 
-echo Atualizacao aplicada com sucesso!
-echo Reiniciando aplicacao em 3 segundos...
-timeout /t 3 /nobreak
+    Write-Host "Aplicando nova versao..."
+    Copy-Item $downloadedFile $currentExe -Force
 
-start "" {current_exe_short}
+    Write-Host "Atualizando arquivo de versao..."
+    $newVersion | Out-File -FilePath $versionFile -Encoding UTF8 -NoNewline
 
-timeout /t 1 /nobreak > nul
-del "%~f0"
+    Write-Host "Limpando arquivos temporarios..."
+    Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
+    Remove-Item "$currentExe.backup" -Force -ErrorAction SilentlyContinue
+
+    Write-Host "Atualizacao aplicada com sucesso!"
+    Write-Host "Reiniciando aplicacao em 3 segundos..."
+    Start-Sleep -Seconds 3
+
+    Start-Process $currentExe
+
+}} catch {{
+    Write-Host "ERRO: $($_.Exception.Message)"
+    Write-Host "Restaurando backup..."
+    if (Test-Path "$currentExe.backup") {{
+        Copy-Item "$currentExe.backup" $currentExe -Force
+        Remove-Item "$currentExe.backup" -Force -ErrorAction SilentlyContinue
+    }}
+    Read-Host "Pressione Enter para continuar"
+    exit 1
+}}
+
+Start-Sleep -Seconds 1
+Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
 """
 
-            # Salva e executa o script batch
-            batch_file = os.path.join(tempfile.gettempdir(), "update_aplicar.bat")
-            with open(batch_file, 'w', encoding='utf-8', newline='\r\n') as f:
-                f.write(batch_content)
+            # Salva e executa o script PowerShell
+            ps_file = os.path.join(tempfile.gettempdir(), "update_aplicar.ps1")
+            with open(ps_file, 'w', encoding='utf-8', newline='\r\n') as f:
+                f.write(powershell_content)
 
             self._log("Executando script de atualização...")
 
-            # Executa o batch e sai do aplicativo atual
-            subprocess.Popen([batch_file], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            # Executa o PowerShell e sai do aplicativo atual
+            subprocess.Popen([
+                "powershell.exe",
+                "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Normal",
+                "-File", ps_file
+            ], creationflags=subprocess.CREATE_NEW_CONSOLE)
 
             # Sai do aplicativo atual para permitir substituição
             time.sleep(1)

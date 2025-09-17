@@ -479,7 +479,7 @@ SYSTEM_PROMPT = (
     "🎯 TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (uma para cada direção)\n"
     "🎯 EXTRAIA LITERALMENTE cada nome, matrícula, rua mencionada como confrontante\n"
     "🎯 ANALISE palavra por palavra a descrição do imóvel principal\n"
-    "🎯 PROCURE confrontantes em TODAS as direções (norte, sul, leste, oeste, frente, fundos)\n"
+    "🎯 PROCURE confrontantes em TODAS as direções (norte, sul, leste, oeste, nascente, poente, frente, fundos, direita, esquerda)\n"
     "🎯 SE MENOS DE 4 CONFRONTANTES: releia o texto procurando informações perdidas\n"
     "\n\nCONSEQUÊNCIAS:\n"
     "❌ UM confrontante perdido = usucapião pode ser NEGADO\n"
@@ -542,7 +542,7 @@ AGGREGATE_PROMPT = (
     "   ⚠️ INSTRUÇÕES CRÍTICAS:\n"
     "   - LEIA PALAVRA POR PALAVRA da descrição do imóvel principal\n"
     "   - TODO LOTE DEVE TER NO MÍNIMO 4 CONFRONTANTES (uma para cada direção)\n"
-    "   - Para CADA direção (norte, sul, leste, oeste, frente, fundos), identifique O QUE confronta\n"
+    "   - Para CADA direção (norte, sul, leste, oeste, nascente, poente, frente, fundos, direita, esquerda), identifique O QUE confronta\n"
     "   - Se encontrou menos de 4 confrontantes, RELEIA o texto procurando mais\n"
     "   - Se mencionar 'terreno de João Silva', João Silva é confrontante\n"
     "   - Se mencionar 'matrícula 1.234', a matrícula 1.234 é confrontante\n"
@@ -727,7 +727,19 @@ AGGREGATE_PROMPT = (
     '      "identificador": "Rua das Flores",\n'
     '      "tipo": "via_publica",\n'
     '      "matricula_anexada": null,\n'
+    '      "direcao": "frente"\n'
+    '    },\n'
+    '    {\n'
+    '      "identificador": "João Silva",\n'
+    '      "tipo": "pessoa",\n'
+    '      "matricula_anexada": null,\n'
     '      "direcao": "sul"\n'
+    '    },\n'
+    '    {\n'
+    '      "identificador": "lote 09",\n'
+    '      "tipo": "lote",\n'
+    '      "matricula_anexada": "12348",\n'
+    '      "direcao": "leste"\n'
     '    }\n'
     '  ],\n'
     '  "matriculas_nao_confrontantes": ["12348"],\n'
@@ -2336,49 +2348,148 @@ class App(tk.Tk):
                 confianca
             ))
         
-        # Insere matrículas confrontantes como filhas
-        for mat_num in result.matriculas_confrontantes:
-            # Encontra dados da matrícula confrontante
-            confrontante_obj = None
-            for mat in result.matriculas_encontradas:
-                if mat.numero == mat_num:
-                    confrontante_obj = mat
-                    break
-            
-            proprietarios_confrontante = confrontante_obj.proprietarios if confrontante_obj else ["N/A"]
-            if not proprietarios_confrontante:
-                proprietarios_confrontante = ["N/A"]
-            
-            # Formata informação de lote/quadra da confrontante
-            lote_quadra_confrontante = ""
-            if confrontante_obj and (confrontante_obj.lote or confrontante_obj.quadra):
-                lote_parts = []
-                if confrontante_obj.lote:
-                    lote_parts.append(f"Lote {confrontante_obj.lote}")
-                if confrontante_obj.quadra:
-                    lote_parts.append(f"Quadra {confrontante_obj.quadra}")
-                lote_quadra_confrontante = " / ".join(lote_parts)
-            
-            # Primeira linha da matrícula confrontante
-            conf_id = self.tree_results.insert(principal_id, "end", text="  ↳", values=(
-                mat_num,
-                lote_quadra_confrontante,
-                "Confrontante",
-                proprietarios_confrontante[0],
-                "",  # Estado MS só na principal
-                ""   # Confiança só na principal
-            ))
-            
-            # Linhas adicionais para outros proprietários da confrontante
-            for proprietario in proprietarios_confrontante[1:]:
-                self.tree_results.insert(conf_id, "end", text="", values=(
-                    "",  # Matrícula vazia nas linhas de proprietários adicionais
-                    "",  # Lote/Quadra vazio
-                    "",  # Tipo vazio
-                    proprietario,
+        # Insere lotes confrontantes organizados por localização
+        if result.lotes_confrontantes:
+            # Agrupa confrontantes por direção
+            confrontantes_por_direcao = {}
+            for lote_confronta in result.lotes_confrontantes:
+                direcao = lote_confronta.direcao or "Não especificada"
+                if direcao not in confrontantes_por_direcao:
+                    confrontantes_por_direcao[direcao] = []
+                confrontantes_por_direcao[direcao].append(lote_confronta)
+
+            # Ordena direções para exibição consistente
+            ordem_direcoes = ['norte', 'sul', 'leste', 'oeste', 'nascente', 'poente', 'frente', 'fundos', 'direita', 'esquerda']
+            direcoes_ordenadas = []
+            for dir_pref in ordem_direcoes:
+                for dir_real in confrontantes_por_direcao.keys():
+                    if dir_real.lower() == dir_pref:
+                        direcoes_ordenadas.append(dir_real)
+                        break
+
+            # Adiciona direções restantes
+            for dir_real in confrontantes_por_direcao.keys():
+                if dir_real not in direcoes_ordenadas:
+                    direcoes_ordenadas.append(dir_real)
+
+            # Insere confrontantes por direção
+            for direcao in direcoes_ordenadas:
+                lotes = confrontantes_por_direcao[direcao]
+
+                # Cria nó da direção
+                direcao_formatada = direcao.upper()
+                direcao_id = self.tree_results.insert(principal_id, "end", text="🧭", values=(
+                    "",
+                    "",
+                    f"📍 {direcao_formatada}",
+                    f"{len(lotes)} confrontante(s)",
+                    "",
+                    ""
+                ))
+
+                # Insere cada confrontante da direção
+                for lote_confronta in lotes:
+                    # Encontra dados da matrícula se houver
+                    confrontante_obj = None
+                    if lote_confronta.matricula_anexada:
+                        for mat in result.matriculas_encontradas:
+                            if mat.numero == lote_confronta.matricula_anexada:
+                                confrontante_obj = mat
+                                break
+
+                    # Define identificador e proprietários
+                    identificador = lote_confronta.identificador
+                    if confrontante_obj:
+                        proprietarios = confrontante_obj.proprietarios or ["N/A"]
+                        # Formata lote/quadra se disponível
+                        lote_quadra = ""
+                        if confrontante_obj.lote or confrontante_obj.quadra:
+                            lote_parts = []
+                            if confrontante_obj.lote:
+                                lote_parts.append(f"Lote {confrontante_obj.lote}")
+                            if confrontante_obj.quadra:
+                                lote_parts.append(f"Quadra {confrontante_obj.quadra}")
+                            lote_quadra = " / ".join(lote_parts)
+                    else:
+                        proprietarios = ["N/A"]
+                        lote_quadra = ""
+
+                    # Define ícone baseado no tipo
+                    icone_tipo = {
+                        'lote': '🏘️',
+                        'matrícula': '📋',
+                        'pessoa': '👤',
+                        'via_publica': '🛣️',
+                        'estado': '🏛️',
+                        'outros': '📍'
+                    }.get(lote_confronta.tipo, '📍')
+
+                    # Insere confrontante
+                    conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
+                        lote_confronta.matricula_anexada or "",
+                        lote_quadra,
+                        lote_confronta.tipo.title(),
+                        identificador,
+                        "",
+                        ""
+                    ))
+
+                    # Adiciona proprietários se houver matrícula anexada
+                    if confrontante_obj and len(proprietarios) > 0 and proprietarios[0] != "N/A":
+                        for proprietario in proprietarios:
+                            self.tree_results.insert(conf_id, "end", text="", values=(
+                                "",
+                                "",
+                                "",
+                                f"  👤 {proprietario}",
+                                "",
+                                ""
+                            ))
+
+        # Fallback: Insere matrículas confrontantes antigas (caso não haja lotes_confrontantes)
+        elif result.matriculas_confrontantes:
+            for mat_num in result.matriculas_confrontantes:
+                # Encontra dados da matrícula confrontante
+                confrontante_obj = None
+                for mat in result.matriculas_encontradas:
+                    if mat.numero == mat_num:
+                        confrontante_obj = mat
+                        break
+
+                proprietarios_confrontante = confrontante_obj.proprietarios if confrontante_obj else ["N/A"]
+                if not proprietarios_confrontante:
+                    proprietarios_confrontante = ["N/A"]
+
+                # Formata informação de lote/quadra da confrontante
+                lote_quadra_confrontante = ""
+                if confrontante_obj and (confrontante_obj.lote or confrontante_obj.quadra):
+                    lote_parts = []
+                    if confrontante_obj.lote:
+                        lote_parts.append(f"Lote {confrontante_obj.lote}")
+                    if confrontante_obj.quadra:
+                        lote_parts.append(f"Quadra {confrontante_obj.quadra}")
+                    lote_quadra_confrontante = " / ".join(lote_parts)
+
+                # Primeira linha da matrícula confrontante
+                conf_id = self.tree_results.insert(principal_id, "end", text="  ↳", values=(
+                    mat_num,
+                    lote_quadra_confrontante,
+                    "Confrontante",
+                    proprietarios_confrontante[0],
                     "",  # Estado MS só na principal
                     ""   # Confiança só na principal
                 ))
+
+                # Linhas adicionais para outros proprietários da confrontante
+                for proprietario in proprietarios_confrontante[1:]:
+                    self.tree_results.insert(conf_id, "end", text="", values=(
+                        "",  # Matrícula vazia nas linhas de proprietários adicionais
+                        "",  # Lote/Quadra vazio
+                        "",  # Tipo vazio
+                        proprietario,
+                        "",  # Estado MS só na principal
+                        ""   # Confiança só na principal
+                    ))
 
         # Insere matrículas NÃO confrontantes (se houver)
         for mat_num in result.matriculas_nao_confrontantes:
@@ -2424,16 +2535,8 @@ class App(tk.Tk):
                     ""   # Confiança só na principal
                 ))
 
-        # Insere lotes confrontantes sem matrícula anexada
-        for lote_sem_mat in result.lotes_sem_matricula:
-            self.tree_results.insert(principal_id, "end", text="  ⚠", values=(
-                "FALTANTE",
-                lote_sem_mat,
-                "Falta Matrícula",
-                "Matrícula não anexada",
-                "",  # Estado MS só na principal
-                ""   # Confiança só na principal
-            ))
+        # Nota: lotes_sem_matricula agora são incluídos em lotes_confrontantes
+        # sem necessidade de marcar como "faltantes" separadamente
         
         # Expande automaticamente a árvore
         self.tree_results.item(principal_id, open=True)
@@ -2947,17 +3050,29 @@ RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, 
     def _calculate_plot_coordinates(self, medidas: Dict, formato: str) -> List[Tuple[float, float]]:
         """Calcula coordenadas do terreno baseado nas medidas"""
         try:
+            # Se não há medidas, gera terreno padrão
             if not medidas:
-                return None
-                
-            # Extrai medidas principais
-            frente = self._extract_number(medidas.get('frente', ''))
-            fundos = self._extract_number(medidas.get('fundos', ''))
-            lado_direito = self._extract_number(medidas.get('lado_direito', ''))
-            lado_esquerdo = self._extract_number(medidas.get('lado_esquerdo', ''))
-            
-            if not any([frente, fundos, lado_direito, lado_esquerdo]):
-                return None
+                print("⚠️ Nenhuma medida encontrada, usando terreno padrão")
+                return [(0, 0), (20, 0), (20, 30), (0, 30)]  # Terreno padrão 20x30
+
+            # Extrai medidas principais com fallback
+            frente = self._extract_number(medidas.get('frente', '')) or \
+                     self._extract_number(medidas.get('lateral_direita', '')) or \
+                     self._extract_number(medidas.get('lateral_esquerda', '')) or 20
+
+            fundos = self._extract_number(medidas.get('fundos', '')) or \
+                     self._extract_number(medidas.get('lateral_direita', '')) or \
+                     self._extract_number(medidas.get('lateral_esquerda', '')) or frente
+
+            lado_direito = self._extract_number(medidas.get('lado_direito', '')) or \
+                          self._extract_number(medidas.get('lateral_direita', '')) or \
+                          self._extract_number(medidas.get('direita', '')) or 30
+
+            lado_esquerdo = self._extract_number(medidas.get('lado_esquerdo', '')) or \
+                           self._extract_number(medidas.get('lateral_esquerda', '')) or \
+                           self._extract_number(medidas.get('esquerda', '')) or lado_direito
+
+            print(f"📏 Medidas extraídas: frente={frente}, fundos={fundos}, direito={lado_direito}, esquerdo={lado_esquerdo}")
             
             # Define valores padrão baseados nos dados disponíveis
             if formato.lower() == 'retangular' or not formato:

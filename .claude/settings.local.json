@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(pyinstaller:*)",
+      "Bash(dist/RelatorioTJMS.exe:*)",
+      "Bash(tasklist:*)"
     ],
     "deny": [],
     "ask": []
