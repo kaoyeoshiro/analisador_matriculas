@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 class FeedbackSystem:
-    def __init__(self, app_version: str = "1.0.0", modelo_llm: str = "claude-3.5-sonnet"):
+    def __init__(self, app_version: str = "1.0.0", modelo_llm: str = "google/gemini-2.5-pro"):
         """
         Inicializa o sistema de feedback
 

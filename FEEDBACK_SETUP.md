@@ -101,7 +101,7 @@ GOOGLE_FORM_FIELD_VERSAO=entry.147258369
   "tipo": "SUCESSO_AUTO",
   "descricao": "Relatório do processo 12345 gerado sem problemas reportados - novo relatório iniciado",
   "processo": "12345",
-  "modelo": "claude-3.5-sonnet",
+  "modelo": "google/gemini-2.5-pro",
   "timestamp": "2024-01-15 14:30:25",
   "versao": "1.0.0"
 }
@@ -113,7 +113,7 @@ GOOGLE_FORM_FIELD_VERSAO=entry.147258369
   "tipo": "ERRO",
   "descricao": "A matrícula 67890 não foi identificada corretamente no texto",
   "processo": "12345",
-  "modelo": "claude-3.5-sonnet",
+  "modelo": "google/gemini-2.5-pro",
   "timestamp": "2024-01-15 14:35:10",
   "versao": "1.0.0"
 }

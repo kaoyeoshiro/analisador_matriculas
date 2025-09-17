@@ -47,7 +47,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Carrega .env
 load_dotenv()
-DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
+DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-pro")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 # Configuração do Google Forms para Feedback
@@ -1745,11 +1745,14 @@ class App(tk.Tk):
         # Sistema de Feedback Inteligente
         self.feedback_system = initialize_feedback_system(
             app_version="1.0.0",
-            modelo_llm="claude-3.5-sonnet"
+            modelo_llm=DEFAULT_MODEL
         )
 
         # Sistema de Auto-atualização
         self.updater = create_updater()
+        self.updater.auto_update = False
+        self.updater.parent_window = self
+        self._update_window = None
 
         self.create_widgets()
         self.poll_queue()
@@ -2241,14 +2244,16 @@ class App(tk.Tk):
         pass  # Feedback automático gerenciado pelo sistema inteligente
 
     def check_for_updates(self):
-        """Verifica e aplica atualizações automaticamente em background"""
+        """Verifica se ha atualizacao e consulta o usuario antes de aplicar"""
         def update_thread():
             try:
-                self.updater.update_if_available()
-            except Exception as e:
+                update_info = self.updater.check_for_updates()
+                if update_info:
+                    self.after(0, lambda: self._show_update_dialog(update_info, self.updater, automatic=True))
+            except Exception:
                 pass
 
-        # Executa em thread separada para não bloquear a interface
+        # Executa em thread separada para nao bloquear a interface
         threading.Thread(target=update_thread, daemon=True).start()
 
     def manual_check_updates(self):
@@ -2260,6 +2265,8 @@ class App(tk.Tk):
                 # Cria updater com silent=False para debug
                 debug_updater = create_updater()
                 debug_updater.silent = False
+                debug_updater.auto_update = False
+                debug_updater.parent_window = self
 
                 update_info = debug_updater.check_for_updates()
                 print(f"📋 Resultado da verificação: {update_info}")
@@ -2284,31 +2291,119 @@ class App(tk.Tk):
 
         threading.Thread(target=update_thread, daemon=True).start()
 
-    def _show_update_dialog(self, update_info, updater):
-        """Mostra o diálogo de atualização na thread principal"""
-        response = messagebox.askyesno(
-            "Atualização Disponível",
-            f"Nova versão {update_info['version']} disponível!\n\n"
-            "Deseja atualizar agora?",
-            parent=self
-        )
-        if response:
-            messagebox.showinfo(
-                "Atualizando",
-                "O aplicativo será atualizado e reiniciado automaticamente.",
-                parent=self
-            )
-            # Executa atualização em thread separada
-            def apply_update():
-                try:
-                    print("🔄 Iniciando processo de atualização...")
-                    updater.update_if_available()
-                except Exception as e:
-                    print(f"❌ Erro na aplicação da atualização: {e}")
-                    import traceback
-                    traceback.print_exc()
+    def _show_update_dialog(self, update_info, updater, automatic=False):
+        """Exibe janela dedicada para confirmar atualizacao"""
+        existing = getattr(self, "_update_window", None)
+        if existing is not None and existing.winfo_exists():
+            try:
+                existing.lift()
+                existing.focus_force()
+            except tk.TclError:
+                self._update_window = None
+            else:
+                return
 
-            threading.Thread(target=apply_update, daemon=True).start()
+        window = tk.Toplevel(self)
+        window.title("Atualizacao disponivel")
+        window.geometry("480x420")
+        window.minsize(420, 360)
+        window.transient(self)
+        window.grab_set()
+
+        self._update_window = window
+
+        def close_window():
+            if self._update_window is window:
+                self._update_window = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", close_window)
+
+        container = ttk.Frame(window)
+        container.pack(fill="both", expand=True, padx=16, pady=14)
+
+        current_version = getattr(updater, "current_version", None) or "-"
+        header_text = f"Nova versao {update_info['version']} disponivel"
+        ttk.Label(container, text=header_text, font=("Arial", 13, "bold")).pack(anchor="w")
+
+        if current_version and current_version != "-":
+            ttk.Label(container, text=f"Versao instalada: {current_version}", font=("Arial", 10)).pack(anchor="w", pady=(4, 0))
+
+        origin_message = "Este aviso foi aberto automaticamente." if automatic else "Este aviso foi aberto manualmente."
+        ttk.Label(container, text=origin_message, font=("Arial", 9), foreground="gray").pack(anchor="w", pady=(2, 10))
+
+        ttk.Separator(container).pack(fill="x", pady=(0, 10))
+
+        notes = (update_info.get("release_notes") or "").strip()
+        notes_frame = ttk.LabelFrame(container, text="Notas da versao")
+        notes_frame.pack(fill="both", expand=True)
+
+        notes_text = tk.Text(notes_frame, wrap="word", height=8, font=("Consolas", 9))
+        notes_text.pack(side="left", fill="both", expand=True, padx=0, pady=4)
+        scrollbar = ttk.Scrollbar(notes_frame, orient="vertical", command=notes_text.yview)
+        scrollbar.pack(side="right", fill="y", padx=0, pady=4)
+        notes_text.configure(yscrollcommand=scrollbar.set)
+        notes_text.insert("1.0", notes if notes else "Nenhuma nota de versao foi publicada.")
+        notes_text.configure(state="disabled")
+
+        ttk.Separator(container).pack(fill="x", pady=(12, 10))
+
+        status_var = tk.StringVar(value='Clique em "Atualizar agora" para iniciar o processo.')
+        ttk.Label(container, textvariable=status_var, wraplength=420, font=("Arial", 10)).pack(fill="x")
+
+        progress_var = tk.IntVar(value=0)
+        progress = ttk.Progressbar(container, maximum=100, variable=progress_var)
+        progress.pack(fill="x", pady=(6, 6))
+
+        buttons = ttk.Frame(container)
+        buttons.pack(fill="x", pady=(10, 0))
+
+        def start_update():
+            btn_update.config(state="disabled")
+            btn_later.config(state="disabled")
+            status_var.set("Iniciando atualizacao...")
+            progress_var.set(5)
+
+            def run_update():
+                previous_auto = getattr(updater, "auto_update", True)
+                try:
+                    updater.auto_update = True
+
+                    def progress_callback(state, percent):
+                        def update_ui():
+                            status_var.set(state)
+                            try:
+                                progress_value = int(percent)
+                            except Exception:
+                                progress_value = 0
+                            progress_var.set(max(0, min(100, progress_value)))
+                        self.after(0, update_ui)
+
+                    success = updater.update_if_available(progress_callback=progress_callback)
+                    if not success:
+                        def finish_no_update():
+                            status_var.set("Nenhuma atualizacao foi aplicada.")
+                            btn_update.config(state="normal")
+                            btn_later.config(state="normal")
+                        self.after(0, finish_no_update)
+                except Exception as exc:
+                    def handle_error():
+                        status_var.set(f"Erro durante a atualizacao: {exc}")
+                        btn_update.config(state="normal")
+                        btn_later.config(state="normal")
+                    self.after(0, handle_error)
+                finally:
+                    updater.auto_update = previous_auto
+
+            threading.Thread(target=run_update, daemon=True).start()
+
+        btn_update = ttk.Button(buttons, text="Atualizar agora", command=start_update)
+        btn_update.pack(side="left")
+
+        btn_later = ttk.Button(buttons, text="Mais tarde", command=close_window)
+        btn_later.pack(side="right")
+
+        window.focus_set()
 
     def reportar_erro_feedback(self):
         """Abre diálogo para reportar erro no conteúdo"""

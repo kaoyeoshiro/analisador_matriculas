@@ -12,7 +12,7 @@
 2. CONFIGURAÇÃO INICIAL:
    - Obtenha uma API Key em: https://openrouter.ai/
    - Cole a chave no campo "API Key" na interface
-   - Escolha o modelo de IA (recomendado: claude-3.5-sonnet)
+   - Escolha o modelo de IA (recomendado: google/gemini-2.5-pro)
 
 3. PROCESSAR MATRÍCULAS:
    - Clique em "Adicionar PDFs/Imagens"

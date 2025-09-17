@@ -118,7 +118,7 @@ GOOGLE_FORM_CONFIG = {
         "confrontacoes_encontradas": 4,
         "tempo_processamento": 0,
         "planta_gerada": true,
-        "modelo_ia_usado": "anthropic/claude-3.5-sonnet",
+        "modelo_ia_usado": "google/gemini-2.5-pro",
         "matriculas_encontradas": 2
     }
 }
