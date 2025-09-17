@@ -51,9 +51,13 @@ class AutoUpdater:
 
         # Diretório base do aplicativo
         if self.is_executable:
-            self.app_dir = os.path.dirname(sys.executable)
+            self.app_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
             self.app_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Garante que o diretório existe
+        if not os.path.exists(self.app_dir):
+            self.app_dir = os.getcwd()
 
         # Versão atual
         self.current_version = current_version or self._read_version_file()
@@ -201,46 +205,101 @@ class AutoUpdater:
                 self._log("Não é possível aplicar atualização - não está rodando como executável")
                 return False
 
+            # Verifica se os arquivos existem
+            if not os.path.exists(downloaded_file):
+                self._log(f"Arquivo baixado não encontrado: {downloaded_file}")
+                return False
+
+            if not os.path.exists(current_exe):
+                self._log(f"Executável atual não encontrado: {current_exe}")
+                return False
+
             self._log("Aplicando atualização...")
 
-            # Cria script batch para substituir o executável
+            # Usa caminhos curtos para evitar problemas com espaços
+            import subprocess
+            try:
+                # Converte para caminho curto no Windows
+                def get_short_path(path):
+                    try:
+                        import ctypes
+                        from ctypes import wintypes
+                        _GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+                        _GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+                        _GetShortPathNameW.restype = wintypes.DWORD
+
+                        output_buf = ctypes.create_unicode_buffer(260)
+                        result = _GetShortPathNameW(path, output_buf, 260)
+                        if result:
+                            return output_buf.value
+                    except:
+                        pass
+                    return path
+
+                current_exe_short = get_short_path(current_exe)
+                downloaded_file_short = get_short_path(downloaded_file)
+                version_file_short = get_short_path(os.path.join(self.app_dir, 'VERSION'))
+
+            except:
+                # Fallback para caminhos normais com aspas duplas
+                current_exe_short = f'"{current_exe}"'
+                downloaded_file_short = f'"{downloaded_file}"'
+                version_file_short = f'"{os.path.join(self.app_dir, "VERSION")}"'
+
+            # Cria script batch mais robusto
             batch_content = f"""@echo off
+chcp 65001 > nul
 echo Aplicando atualizacao...
 timeout /t 2 /nobreak > nul
 
-REM Backup do executável atual
-copy "{current_exe}" "{current_exe}.backup" > nul 2>&1
-
-REM Substitui o executável
-copy "{downloaded_file}" "{current_exe}" /Y
-if errorlevel 1 (
-    echo Erro ao aplicar atualizacao
-    REM Restaura backup se falhou
-    copy "{current_exe}.backup" "{current_exe}" /Y > nul 2>&1
+echo Verificando arquivos...
+if not exist {downloaded_file_short} (
+    echo ERRO: Arquivo de atualizacao nao encontrado
+    echo Caminho: {downloaded_file_short}
     pause
     exit /b 1
 )
 
-REM Atualiza arquivo VERSION
-echo {update_info['version']} > "{os.path.join(self.app_dir, 'VERSION')}"
+if not exist {current_exe_short} (
+    echo ERRO: Executavel atual nao encontrado
+    echo Caminho: {current_exe_short}
+    pause
+    exit /b 1
+)
 
-REM Remove arquivos temporários
-del "{downloaded_file}" > nul 2>&1
-del "{current_exe}.backup" > nul 2>&1
+echo Criando backup...
+copy {current_exe_short} {current_exe_short}.backup > nul 2>&1
+
+echo Aplicando nova versao...
+copy {downloaded_file_short} {current_exe_short} /Y
+if errorlevel 1 (
+    echo ERRO: Falha ao copiar nova versao
+    echo Restaurando backup...
+    copy {current_exe_short}.backup {current_exe_short} /Y > nul 2>&1
+    pause
+    exit /b 1
+)
+
+echo Atualizando arquivo de versao...
+echo {update_info['version']} > {version_file_short}
+
+echo Limpando arquivos temporarios...
+del {downloaded_file_short} > nul 2>&1
+del {current_exe_short}.backup > nul 2>&1
 
 echo Atualizacao aplicada com sucesso!
-echo Reiniciando aplicacao...
+echo Reiniciando aplicacao em 3 segundos...
+timeout /t 3 /nobreak
 
-REM Reinicia o aplicativo
-start "" "{current_exe}"
+start "" {current_exe_short}
 
-REM Remove este script
+timeout /t 1 /nobreak > nul
 del "%~f0"
 """
 
             # Salva e executa o script batch
             batch_file = os.path.join(tempfile.gettempdir(), "update_aplicar.bat")
-            with open(batch_file, 'w', encoding='utf-8') as f:
+            with open(batch_file, 'w', encoding='utf-8', newline='\r\n') as f:
                 f.write(batch_content)
 
             self._log("Executando script de atualização...")
