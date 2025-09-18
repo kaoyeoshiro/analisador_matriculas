@@ -41,7 +41,7 @@ jobs:
 
     - name: Build executable with PyInstaller
       run: |
-        pyinstaller --clean --noconfirm Matriculas_Confrontantes_PGE_MS.spec
+        pyinstaller --clean --noconfirm build_tools/Matriculas_Confrontantes_PGE_MS.spec
 
     - name: Verify build output
       run: |
