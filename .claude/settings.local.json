@@ -13,7 +13,9 @@
       "Bash(cmd /c:*)",
       "Bash(mkdir:*)",
       "Bash(mv:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(./RelatorioTJMS.exe)",
+      "Bash(powershell.exe:*)"
     ],
     "deny": [],
     "ask": []

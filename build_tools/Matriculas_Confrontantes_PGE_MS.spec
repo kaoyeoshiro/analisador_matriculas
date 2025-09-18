@@ -16,15 +16,57 @@ if os.path.exists('../config/.env.example'):
 if os.path.exists('../docs/FEEDBACK_SETUP.md'):
     datas.append(('../docs/FEEDBACK_SETUP.md', '.'))
 
+# Adiciona módulos do sistema como dados
+if os.path.exists('../src/updater.py'):
+    datas.append(('../src/updater.py', '.'))
+if os.path.exists('../src/feedback_system.py'):
+    datas.append(('../src/feedback_system.py', '.'))
+
 a = Analysis(
     ['../src/main.py'],
-    pathex=[],
+    pathex=['../src'],
     binaries=[],
     datas=datas,
     hiddenimports=[
         'packaging.version',  # Necessário para updater.py
         'requests',
         'urllib.parse',
+        'fitz',  # PyMuPDF
+        'PIL',
+        'PIL.Image',
+        'pdf2image',
+        'pdf2image.utils',
+        'docx',
+        'docx.document',
+        'docx.shared',
+        'docx.oxml.ns',
+        'docx.enum.text',
+        'reportlab',
+        'reportlab.pdfgen',
+        'reportlab.lib.pagesizes',
+        'reportlab.lib.styles',
+        'reportlab.platypus',
+        'reportlab.lib.enums',
+        'dotenv',
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        'tkinter.messagebox',
+        'tkinter.font',
+        'threading',
+        'queue',
+        'json',
+        'base64',
+        'tempfile',
+        'subprocess',
+        'pathlib',
+        'dataclasses',
+        'datetime',
+        'textwrap',
+        'csv',
+        # Módulos do sistema
+        'updater',
+        'feedback_system',
     ],
     hookspath=[],
     hooksconfig={},

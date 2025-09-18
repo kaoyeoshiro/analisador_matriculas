@@ -11,6 +11,7 @@ import base64
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple, Union
+import configparser
 
 # --- OCR & PDF ---
 import fitz  # PyMuPDF
@@ -55,8 +56,43 @@ from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 # --- Auto-atualização ---
-from updater import create_updater
-from feedback_system import initialize_feedback_system, get_feedback_system
+try:
+    from .updater import create_updater
+except ImportError:
+    try:
+        from updater import create_updater
+    except ImportError:
+        # Se não conseguir importar, cria um updater dummy
+        def create_updater():
+            class DummyUpdater:
+                def __init__(self):
+                    self.auto_update = False
+                    self.parent_window = None
+                def sync_version_with_github(self): pass
+                def check_for_updates(self): return None
+                def update_if_available(self, progress_callback=None): return False
+            return DummyUpdater()
+        print("⚠️ Sistema de auto-atualização não disponível")
+
+try:
+    from .feedback_system import initialize_feedback_system, get_feedback_system
+except ImportError:
+    try:
+        from feedback_system import initialize_feedback_system, get_feedback_system
+    except ImportError:
+        # Se não conseguir importar, cria dummy functions
+        class DummyFeedback:
+            def set_feedback_button(self, btn): pass
+            def apos_processo_completo(self, result): pass
+            def apos_geracao_planta(self, result): pass
+            def on_fechamento_aplicacao(self): pass
+
+        def initialize_feedback_system(app_version=None, modelo_llm=None):
+            return DummyFeedback()
+
+        def get_feedback_system():
+            return DummyFeedback()
+        print("⚠️ Sistema de feedback não disponível")
 
 # =========================u
 # Configuração
@@ -83,6 +119,68 @@ APP_VERSION = _load_app_version()
 DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-pro")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 FULL_REPORT_MODEL = "google/gemini-2.5-flash"
+
+# =========================
+# Sistema de Persistência de Configuração
+# =========================
+def get_config_file_path():
+    """Retorna o caminho do arquivo de configuração"""
+    if getattr(sys, 'frozen', False):
+        # Executável - salva ao lado do .exe
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        # Desenvolvimento - salva no diretório do script
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(app_dir, "config.ini")
+
+def save_api_key(api_key: str):
+    """Salva a API Key no arquivo de configuração"""
+    try:
+        config = configparser.ConfigParser()
+        config_path = get_config_file_path()
+
+        # Carrega configuração existente se houver
+        if os.path.exists(config_path):
+            config.read(config_path)
+
+        # Adiciona/atualiza seção
+        if 'API' not in config:
+            config.add_section('API')
+
+        # Codifica a API key em base64 para ofuscação básica
+        encoded_key = base64.b64encode(api_key.encode()).decode()
+        config['API']['openrouter_key'] = encoded_key
+
+        # Salva arquivo
+        with open(config_path, 'w') as f:
+            config.write(f)
+
+        print(f"API Key salva em: {config_path}")
+        return True
+    except Exception as e:
+        print(f"Erro ao salvar API Key: {e}")
+        return False
+
+def load_api_key() -> str:
+    """Carrega a API Key do arquivo de configuração"""
+    try:
+        config_path = get_config_file_path()
+        if not os.path.exists(config_path):
+            return ""
+
+        config = configparser.ConfigParser()
+        config.read(config_path)
+
+        if 'API' in config and 'openrouter_key' in config['API']:
+            # Decodifica a API key
+            encoded_key = config['API']['openrouter_key']
+            decoded_key = base64.b64decode(encoded_key.encode()).decode()
+            return decoded_key
+
+        return ""
+    except Exception as e:
+        print(f"Erro ao carregar API Key: {e}")
+        return ""
 
 # Configuração do Google Forms para Feedback
 GOOGLE_FORM_CONFIG = {
@@ -308,13 +406,14 @@ def pdf_to_images(pdf_path: str, max_pages: Optional[int] = 10) -> List[Image.Im
 # =========================
 # Cliente OpenRouter
 # =========================
-def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, images_base64: List[str], temperature: float = 0.0, max_tokens: int = 1500) -> Dict:
+def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, images_base64: List[str], temperature: float = 0.0, max_tokens: int = 1500, api_key: str = None) -> Dict:
     """
     Chama a API OpenRouter com suporte a visão computacional (análise de imagens).
     """
-    api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY não configurada.")
+        api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
+    if not api_key:
+        raise RuntimeError("API Key não configurada. Insira sua chave da OpenRouter na interface.")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -445,11 +544,12 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
         raise RuntimeError(f"Erro inesperado na chamada da API: {e}")
 
 
-def call_openrouter_text(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2, max_tokens: int = 2000) -> str:
+def call_openrouter_text(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2, max_tokens: int = 2000, api_key: str = None) -> str:
     """Chama a API OpenRouter para gerar texto com base em prompt estruturado."""
-    api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY não configurada.")
+        api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
+    if not api_key:
+        raise RuntimeError("API Key não configurada. Insira sua chave da OpenRouter na interface.")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -895,7 +995,7 @@ def _safe_process_matricula_data(m_data):
         print(f"⚠️ Erro ao processar dados da matrícula: {e}")
         return None
 
-def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
+def analyze_with_vision_llm(model: str, file_path: str, api_key: str = None) -> AnalysisResult:
     """
     Analisa documento usando visão computacional da LLM (análise direta de imagens).
     """
@@ -1049,7 +1149,8 @@ def analyze_with_vision_llm(model: str, file_path: str) -> AnalysisResult:
             user_prompt=vision_prompt,
             images_base64=images_b64,
             temperature=0.0,
-            max_tokens=100000  # Tokens otimizados para análise eficiente
+            max_tokens=100000,  # Tokens otimizados para análise eficiente
+            api_key=api_key
         )
         
         print(f"✅ Resposta da API recebida com sucesso")
@@ -1709,6 +1810,27 @@ class App(tk.Tk):
         self.btn_remove = ttk.Button(top, text="Remover Selecionados", command=self.remove_selected)
         self.btn_remove.pack(side="left", padx=(8,0))
 
+        # Campo para API Key
+        ttk.Label(top, text="API Key OpenRouter:").pack(side="left", padx=(16,4))
+        # Carrega API key salva ou usa variável de ambiente
+        saved_api_key = load_api_key() or OPENROUTER_API_KEY
+        self.api_key_var = tk.StringVar(value=saved_api_key)
+        self.api_key_entry = ttk.Entry(top, textvariable=self.api_key_var, width=20, show="*")
+        self.api_key_entry.pack(side="left")
+
+        # Botão para salvar API Key
+        self.btn_save_key = ttk.Button(top, text="💾", command=self.save_api_key, width=3)
+        self.btn_save_key.pack(side="left", padx=(2,0))
+
+        # Adiciona tooltip para o botão
+        def show_tooltip(event):
+            self.btn_save_key.configure(text="💾 Salvar")
+        def hide_tooltip(event):
+            self.btn_save_key.configure(text="💾")
+
+        self.btn_save_key.bind("<Enter>", show_tooltip)
+        self.btn_save_key.bind("<Leave>", hide_tooltip)
+
         ttk.Label(top, text="Matrícula Principal (opcional):").pack(side="left", padx=(16,4))
         self.matricula_var = tk.StringVar()
         self.matricula_entry = ttk.Entry(top, textvariable=self.matricula_var, width=15)
@@ -1982,7 +2104,8 @@ class App(tk.Tk):
                     matricula_normalizada = matricula_informada.replace(".", "").replace(" ", "")
                     self.queue.put(("log", f"📝 Matrícula de referência informada: {matricula_normalizada}"))
                 
-                res = analyze_with_vision_llm(model, path)
+                api_key = self.api_key_var.get().strip()
+                res = analyze_with_vision_llm(model, path, api_key)
                 res.arquivo = filename
                 self.results[path] = res
 
@@ -2311,6 +2434,17 @@ class App(tk.Tk):
     def reportar_erro_feedback(self):
         """Abre diálogo para reportar erro no conteúdo"""
         self.feedback_system.on_reportar_erro_manual(parent_window=self)
+
+    def save_api_key(self):
+        """Salva a API Key atual"""
+        api_key = self.api_key_var.get().strip()
+        if api_key:
+            if save_api_key(api_key):
+                messagebox.showinfo("Sucesso", "API Key salva com sucesso!")
+            else:
+                messagebox.showerror("Erro", "Não foi possível salvar a API Key.")
+        else:
+            messagebox.showwarning("Aviso", "Digite uma API Key antes de salvar.")
 
     def _on_closing(self):
         """Método chamado ao fechar a aplicação - envia feedback automático se necessário"""
@@ -2972,7 +3106,8 @@ class App(tk.Tk):
                 payload_dict = self._build_full_report_payload(result, model)
                 payload_json = json.dumps(payload_dict, ensure_ascii=False, indent=2)
                 prompt = build_full_report_prompt(payload_json)
-                report_text = self._request_full_report(model, prompt)
+                api_key = self.api_key_var.get().strip()
+                report_text = self._request_full_report(model, prompt, api_key)
                 self.cached_full_report_text = report_text.strip()
                 self.cached_full_report_payload = payload_json
                 self.after(0, lambda: self._show_full_report_window(report_text, payload_json, progress_window))
@@ -2983,7 +3118,7 @@ class App(tk.Tk):
 
         threading.Thread(target=run_generation, daemon=True).start()
 
-    def _request_full_report(self, model: str, prompt: str) -> str:
+    def _request_full_report(self, model: str, prompt: str, api_key: str = None) -> str:
         """Encapsula a chamada textual à OpenRouter adicionando tratamento de erro contextual."""
         try:
             return call_openrouter_text(
@@ -2991,7 +3126,8 @@ class App(tk.Tk):
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=prompt,
                 temperature=0.2,
-                max_tokens=3200
+                max_tokens=3200,
+                api_key=api_key
             )
         except Exception as exc:
             raise RuntimeError(f"Erro ao solicitar relatório completo: {exc}") from exc

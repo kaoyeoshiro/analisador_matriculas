@@ -7,9 +7,47 @@ import tempfile
 import subprocess
 import requests
 from pathlib import Path
-from packaging import version
 from urllib.parse import urlparse
 from typing import Optional, Callable
+
+# Import seguro para packaging.version
+try:
+    from packaging import version
+    HAS_PACKAGING = True
+except ImportError:
+    HAS_PACKAGING = False
+    # Implementação simples para comparação de versões
+    class SimpleVersion:
+        def __init__(self, version_string):
+            self.version_string = version_string
+            # Remove 'v' prefix se existir
+            if version_string.startswith('v'):
+                version_string = version_string[1:]
+            # Split em números
+            self.parts = []
+            for part in version_string.split('.'):
+                try:
+                    self.parts.append(int(part))
+                except ValueError:
+                    self.parts.append(0)
+
+        def __gt__(self, other):
+            if isinstance(other, str):
+                other = SimpleVersion(other)
+            # Compara parte por parte
+            max_len = max(len(self.parts), len(other.parts))
+            self_parts = self.parts + [0] * (max_len - len(self.parts))
+            other_parts = other.parts + [0] * (max_len - len(other.parts))
+
+            for i in range(max_len):
+                if self_parts[i] > other_parts[i]:
+                    return True
+                elif self_parts[i] < other_parts[i]:
+                    return False
+            return False
+
+    # Cria alias para manter compatibilidade
+    version = type('', (), {'parse': SimpleVersion})()
 
 class AutoUpdater:
     def __init__(self,
