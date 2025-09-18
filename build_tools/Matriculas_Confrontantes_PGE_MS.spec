@@ -4,20 +4,20 @@
 import os
 
 # Constrói lista de datas condicionalmente
-datas = [('VERSION', '.')]  # Arquivo VERSION é obrigatório
+datas = [('../VERSION', '.')]  # Arquivo VERSION é obrigatório
 
 # Adiciona .env apenas se existir
-if os.path.exists('.env'):
-    datas.append(('.env', '.'))
+if os.path.exists('../.env'):
+    datas.append(('../.env', '.'))
 
 # Adiciona arquivos de documentação do feedback
-if os.path.exists('.env.example'):
-    datas.append(('.env.example', '.'))
-if os.path.exists('FEEDBACK_SETUP.md'):
-    datas.append(('FEEDBACK_SETUP.md', '.'))
+if os.path.exists('../config/.env.example'):
+    datas.append(('../config/.env.example', '.'))
+if os.path.exists('../docs/FEEDBACK_SETUP.md'):
+    datas.append(('../docs/FEEDBACK_SETUP.md', '.'))
 
 a = Analysis(
-    ['main.py'],
+    ['../src/main.py'],
     pathex=[],
     binaries=[],
     datas=datas,
