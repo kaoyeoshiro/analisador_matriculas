@@ -1,0 +1,2 @@
+linha antes
+mensagem = f"...\n{error}"

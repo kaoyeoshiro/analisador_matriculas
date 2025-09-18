@@ -13,9 +13,6 @@ python-dotenv>=1.0.0
 # Auto-atualização
 packaging>=23.0
 
-# Image Generation & Processing (para geração de plantas)
-Pillow>=10.0.0  # Já incluído acima, mas essencial para ImageTk
-
 # Type hints (for older Python versions)
 typing-extensions>=4.7.0
 
@@ -30,25 +27,3 @@ dataclasses>=0.6; python_version<"3.7"  # Built-in no Python 3.7+
 # Optional: CSV handling (built-in module, but for clarity)
 # csv  # Built-in module
 
-# ==============================================
-# NOVAS DEPENDÊNCIAS PARA GERAÇÃO DE PLANTAS
-# ==============================================
-
-# Mathematical plotting and visualization
-matplotlib>=3.7.0
-
-# Image processing and display
-# Pillow já incluído acima - usado para:
-# - ImageTk.PhotoImage (exibição de imagens na GUI)
-# - Image.open, Image.thumbnail (processamento de imagens)
-# - Conversão entre formatos de imagem
-
-# Base dependencies já cobertas:
-# - json: Para processamento de respostas (built-in)
-# - io: Para manipulação de streams de imagem (built-in)
-# - threading: Para geração assíncrona (built-in)
-
-# Todas as funcionalidades de geração de planta usam:
-# 1. matplotlib: Para desenhar plantas técnicas precisas
-# 2. Dependências já listadas (Pillow para exibição)
-# 3. Módulos built-in do Python (io, threading, json, tkinter)

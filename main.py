@@ -9,7 +9,7 @@ import tempfile
 import subprocess
 import base64
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- OCR & PDF ---
@@ -26,16 +26,13 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime
 
-# --- Plotting & Visualization ---
-import matplotlib.pyplot as plt
-import math
-import matplotlib.patches as patches
-from matplotlib.patches import Polygon
-import numpy as np
+# --- Utilidades ---
+import textwrap
 
 # --- GUI ---
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import tkinter.font as tkfont
 
 # --- Auto-atualização ---
 from updater import create_updater
@@ -65,6 +62,7 @@ APP_VERSION = _load_app_version()
 
 DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-pro")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+FULL_REPORT_MODEL = "google/gemini-2.5-flash"
 
 # Configuração do Google Forms para Feedback
 GOOGLE_FORM_CONFIG = {
@@ -449,6 +447,53 @@ def call_openrouter_vision(model: str, system_prompt: str, user_prompt: str, ima
         raise RuntimeError(f"Erro inesperado na chamada da API: {e}")
 
 
+def call_openrouter_text(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2, max_tokens: int = 2000) -> str:
+    """Chama a API OpenRouter para gerar texto com base em prompt estruturado."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", OPENROUTER_API_KEY)
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY não configurada.")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://pge-ms.lab/analise-matriculas",
+        "X-Title": "Analise de Matriculas PGE-MS"
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+
+    try:
+        print(f"🌐 [Texto] Requisição para {OPENROUTER_URL} com modelo {model}")
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
+        print(f"📡 [Texto] Status: {resp.status_code}")
+
+        if resp.status_code != 200:
+            preview = resp.text[:500]
+            raise RuntimeError(f"API retornou status {resp.status_code}: {preview}")
+
+        data = resp.json()
+        if not isinstance(data, dict) or "choices" not in data or not data["choices"]:
+            raise RuntimeError(f"Resposta inesperada da API: {data}")
+
+        message = data["choices"][0]["message"].get("content", "")
+        if not message:
+            raise RuntimeError("Resposta da API não contém conteúdo textual.")
+
+        print(f"✅ [Texto] Conteúdo recebido com {len(message)} caracteres")
+        return message
+
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Erro na requisição para OpenRouter: {exc}") from exc
+
+
 def clean_json_response(content: str) -> str:
     """Extrai JSON de uma resposta que pode conter markdown e texto adicional"""
     content = content.strip()
@@ -720,6 +765,37 @@ def build_analysis_prompt(mode: str) -> str:
         return build_prompt('vision')
     else:
         raise ValueError("mode must be 'text' or 'vision'")
+
+
+def build_full_report_prompt(data_json: str) -> str:
+    """Monta prompt para solicitar um relatório textual completo à LLM."""
+    template = textwrap.dedent(
+        f"""
+        Você é um assessor jurídico especializado em usucapião. Elabore um relatório técnico completo, direto e fundamentado, utilizando exclusivamente o quadro de informações estruturadas apresentado a seguir.
+
+        QUADRO DE INFORMAÇÕES ESTRUTURADAS:
+        <<INÍCIO DOS DADOS>>
+        {data_json}
+        <<FIM DOS DADOS>>
+
+        Diretrizes obrigatórias:
+        • Responda em português do Brasil.
+        • NÃO escreva saudações, frases introdutórias genéricas ou promessas. Comece diretamente com o título: **RELATÓRIO COMPLETO DO IMÓVEL**.
+        • Use subseções claras nesta ordem: CONTEXTO, CONFRONTAÇÕES, DIREITOS E RESTRIÇÕES, ANÁLISE CRÍTICA, LACUNAS IDENTIFICADAS, RECOMENDAÇÕES, PARECER FINAL.
+        • Em cada seção, cite explicitamente os dados do quadro (matrículas, lotes, quadras, proprietários, confrontantes, restrições, cadeia dominial, métricas numéricas etc.).
+        • Se algum dado estiver ausente, escreva “Não informado no quadro” e explique o impacto dessa ausência.
+        • Se houver confrontantes sem matrícula anexada, destaque que não é possível confirmar direitos do Estado ou de terceiros para esses casos.
+        • O parecer final deve concluir sobre a suficiência das informações para o usucapião e sugerir próximos passos.
+        • Converta valores booleanos ou termos técnicos como "true", "false" ou "null" para expressões jurídicas (por exemplo, “Sim”, “Não” ou “Não informado”), sem citar essas palavras.
+        • Não utilize a palavra “JSON” nem termos de programação. O texto deve soar como relatório elaborado por assessor jurídico.
+        • Nunca invente ou presuma informações que não estejam no quadro de dados; não repita texto vazio.
+        • Traga sempre os nomes e números dos confrontantes mencionados; quando inexistentes, aponte explicitamente a lacuna.
+    """
+    )
+    return template.strip()
+
+
+
 
 # Compatibilidade com código existente
 SYSTEM_PROMPT = build_prompt('system')
@@ -1580,7 +1656,6 @@ class FeedbackDialog(tk.Toplevel):
             "arquivo_processado": self.dados_geracao.get("arquivo", ""),
             "confrontacoes_encontradas": self.dados_geracao.get("confrontacoes", 0),
             "tempo_processamento": self.dados_geracao.get("tempo", 0),
-            "planta_gerada": self.dados_geracao.get("planta_gerada", False),
             "modelo_ia_usado": self.dados_geracao.get("modelo", DEFAULT_MODEL),
             "resultado_usuario": self.var_resultado.get()
         }
@@ -1639,6 +1714,10 @@ class App(tk.Tk):
         self.updater.parent_window = self
         self._update_window = None
 
+        # Cache do relatório completo
+        self.cached_full_report_text: Optional[str] = None
+        self.cached_full_report_payload: Optional[str] = None
+
         self.create_widgets()
         self.poll_queue()
 
@@ -1683,23 +1762,11 @@ class App(tk.Tk):
         self.matricula_entry.bind('<FocusOut>', validate_placeholder)
         add_placeholder()
         
-        ttk.Label(top, text="Modelo com Visão:").pack(side="left", padx=(16,4))
-        self.model_var = tk.StringVar(value=DEFAULT_MODEL)
-        self.model_entry = ttk.Entry(top, textvariable=self.model_var, width=25)
-        self.model_entry.pack(side="left")
-        
-        # Dica sobre modelos com visão
-        info_btn = ttk.Button(top, text="?", width=3, command=self.show_model_info)
-        info_btn.pack(side="left", padx=(2,0))
-
         self.btn_process = ttk.Button(top, text="Processar", command=self.process_all)
         self.btn_process.pack(side="left", padx=12)
 
         self.btn_export = ttk.Button(top, text="Exportar CSV", command=self.export_csv)
         self.btn_export.pack(side="left")
-        
-        self.btn_generate_plant = ttk.Button(top, text="Gerar Planta", command=self.generate_property_plant)
-        self.btn_generate_plant.pack(side="left", padx=(8,0))
 
         self.btn_feedback = ttk.Button(top, text="⚠️ Reportar Erro no Conteúdo", command=self.reportar_erro_feedback, state="disabled")
         self.btn_feedback.pack(side="left", padx=(8,0))
@@ -1750,33 +1817,98 @@ class App(tk.Tk):
         # Label inicialmente oculto
         self.estado_alert_label.pack_forget()
         
-        ttk.Label(right, text="Imóveis Confrontantes").pack(anchor="w", pady=(0,4))
-        cols = ("matricula", "lote_quadra", "tipo", "proprietario", "estado_ms", "confianca")
-        self.tree_results = ttk.Treeview(right, columns=cols, show="tree headings", height=12)
-        self.tree_results.heading("#0", text="")  # Coluna da árvore
-        self.tree_results.heading("matricula", text="Matrícula")
-        self.tree_results.heading("lote_quadra", text="Lote/Quadra")
-        self.tree_results.heading("tipo", text="Tipo")
-        self.tree_results.heading("proprietario", text="Proprietário")
-        self.tree_results.heading("estado_ms", text="Estado MS")
-        self.tree_results.heading("confianca", text="Confiança")
-        
-        self.tree_results.column("#0", width=30, minwidth=30)  # Coluna da árvore (ícones)
-        self.tree_results.column("matricula", width=100, anchor="center")
-        self.tree_results.column("lote_quadra", width=100, anchor="center")
-        self.tree_results.column("tipo", width=90, anchor="center")
-        self.tree_results.column("proprietario", width=220)  # Ajustada para acomodar nova coluna
-        self.tree_results.column("estado_ms", width=80, anchor="center")
-        self.tree_results.column("confianca", width=80, anchor="center")
-        self.tree_results.pack(fill="both", expand=True)
+        ttk.Label(right, text="Detalhamento das Matrículas").pack(anchor="w", pady=(0,4))
 
+        self.results_notebook = ttk.Notebook(right)
+        self.results_notebook.pack(fill="both", expand=True)
+
+        # Aba: matrícula principal
+        self.tab_principal = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(self.tab_principal, text="Matrícula principal")
+
+        principal_container = ttk.Frame(self.tab_principal)
+        principal_container.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.txt_principal = tk.Text(
+            principal_container,
+            wrap="word",
+            height=15,
+            state=tk.DISABLED,
+            font=("TkDefaultFont", 10),
+            padx=14,
+            pady=10,
+            spacing3=6
+        )
+        principal_scroll = ttk.Scrollbar(principal_container, orient="vertical", command=self.txt_principal.yview)
+        self.txt_principal.configure(yscrollcommand=principal_scroll.set)
+        self.txt_principal.pack(side="left", fill="both", expand=True)
+        principal_scroll.pack(side="right", fill="y")
+
+        # Aba: confrontantes
+        self.tab_confrontantes = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(self.tab_confrontantes, text="Confrontantes")
+
+        lotes_frame = ttk.LabelFrame(self.tab_confrontantes, text="Lotes e matrículas confrontantes")
+        lotes_frame.pack(fill="both", expand=True, padx=5, pady=(5,2))
+
+        self.tree_confrontantes_lotes = ttk.Treeview(lotes_frame, columns=("direcao", "identificador", "matricula", "proprietarios"), show="headings", height=8)
+        self.tree_confrontantes_lotes.heading("direcao", text="Direção")
+        self.tree_confrontantes_lotes.heading("identificador", text="Identificador")
+        self.tree_confrontantes_lotes.heading("matricula", text="Matrícula")
+        self.tree_confrontantes_lotes.heading("proprietarios", text="Proprietários")
+        self.tree_confrontantes_lotes.column("direcao", width=90, anchor="center")
+        self.tree_confrontantes_lotes.column("identificador", width=160, anchor="w")
+        self.tree_confrontantes_lotes.column("matricula", width=110, anchor="center")
+        self.tree_confrontantes_lotes.column("proprietarios", anchor="w")
+
+        lotes_scroll = ttk.Scrollbar(lotes_frame, orient="vertical", command=self.tree_confrontantes_lotes.yview)
+        self.tree_confrontantes_lotes.configure(yscrollcommand=lotes_scroll.set)
+        self.tree_confrontantes_lotes.pack(side="left", fill="both", expand=True, padx=(0,2), pady=2)
+        lotes_scroll.pack(side="right", fill="y", pady=2)
+
+        outros_frame = ttk.LabelFrame(self.tab_confrontantes, text="Confrontantes especiais (vias, rios, Estado, etc.)")
+        outros_frame.pack(fill="both", expand=True, padx=5, pady=(0,5))
+
+        self.tree_confrontantes_outros = ttk.Treeview(outros_frame, columns=("tipo", "identificador", "direcao", "detalhes"), show="headings", height=6)
+        self.tree_confrontantes_outros.heading("tipo", text="Tipo")
+        self.tree_confrontantes_outros.heading("identificador", text="Identificador")
+        self.tree_confrontantes_outros.heading("direcao", text="Direção")
+        self.tree_confrontantes_outros.heading("detalhes", text="Observações / vínculos")
+        self.tree_confrontantes_outros.column("tipo", width=120, anchor="center")
+        self.tree_confrontantes_outros.column("identificador", width=180, anchor="w")
+        self.tree_confrontantes_outros.column("direcao", width=90, anchor="center")
+        self.tree_confrontantes_outros.column("detalhes", anchor="w")
+
+        outros_scroll = ttk.Scrollbar(outros_frame, orient="vertical", command=self.tree_confrontantes_outros.yview)
+        self.tree_confrontantes_outros.configure(yscrollcommand=outros_scroll.set)
+        self.tree_confrontantes_outros.pack(side="left", fill="both", expand=True, padx=(0,2), pady=2)
+        outros_scroll.pack(side="right", fill="y", pady=2)
+
+        # Aba: não-confrontantes
+        self.tab_nao_confrontantes = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(self.tab_nao_confrontantes, text="Não confrontantes")
+
+        nao_conf_frame = ttk.Frame(self.tab_nao_confrontantes)
+        nao_conf_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.tree_nao_confrontantes = ttk.Treeview(nao_conf_frame, columns=("matricula", "identificador", "proprietarios"), show="headings", height=12)
+        self.tree_nao_confrontantes.heading("matricula", text="Matrícula")
+        self.tree_nao_confrontantes.heading("identificador", text="Identificador")
+        self.tree_nao_confrontantes.heading("proprietarios", text="Proprietários")
+        self.tree_nao_confrontantes.column("matricula", width=120, anchor="center")
+        self.tree_nao_confrontantes.column("identificador", width=200, anchor="w")
+        self.tree_nao_confrontantes.column("proprietarios", anchor="w")
+
+        nao_conf_scroll = ttk.Scrollbar(nao_conf_frame, orient="vertical", command=self.tree_nao_confrontantes.yview)
+        self.tree_nao_confrontantes.configure(yscrollcommand=nao_conf_scroll.set)
+        self.tree_nao_confrontantes.pack(side="left", fill="both", expand=True)
+        nao_conf_scroll.pack(side="right", fill="y")
         # Botões de ação sobre resultado
         btns = ttk.Frame(right)
         btns.pack(fill="x", pady=6)
-        self.btn_ver = ttk.Button(btns, text="Ver Detalhes", command=self.show_details)
-        self.btn_ver.pack(side="left")
-        ttk.Label(btns, text="  ").pack(side="left")  # espaçador
-        
+        self.btn_full_report = ttk.Button(btns, text="Gerar Relatório Completo", command=self.generate_full_report)
+        self.btn_full_report.pack(side="left")
+
         # Campo de resumo (maior para melhor legibilidade)
         ttk.Label(right, text="Resumo da Análise").pack(anchor="w", pady=(10,4))
         self.txt_resumo = tk.Text(right, height=8, wrap=tk.WORD, state=tk.DISABLED, font=("TkDefaultFont", 10))
@@ -1800,6 +1932,13 @@ class App(tk.Tk):
         )
         if not paths:
             return
+        if self.files:
+            self.files.clear()
+            for item in self.tree_files.get_children():
+                self.tree_files.delete(item)
+            self.log("Arquivos anteriores removidos.")
+            self.cached_full_report_text = None
+            self.cached_full_report_payload = None
         new = 0
         for p in paths:
             p = os.path.abspath(p)
@@ -1826,16 +1965,14 @@ class App(tk.Tk):
         if not self.files:
             messagebox.showwarning("Nada a processar", "Adicione pelo menos um arquivo.")
             return
-        model = self.model_var.get().strip()
-        if not model:
-            messagebox.showwarning("Modelo", "Informe um modelo do OpenRouter.")
-            return
+        model = DEFAULT_MODEL
 
         self.progress["value"] = 0
         self.progress["maximum"] = len(self.files)
         self.results.clear()
-        for i in self.tree_results.get_children():
-            self.tree_results.delete(i)
+        self.clear_result_views()
+        self.cached_full_report_text = None
+        self.cached_full_report_payload = None
 
         t = threading.Thread(target=self._worker_process, args=(model,), daemon=True)
         t.start()
@@ -1977,93 +2114,6 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Erro ao salvar", str(e))
 
-    def show_details(self):
-        sel = self.tree_results.selection()
-        if not sel:
-            messagebox.showinfo("Detalhes", "Selecione um resultado.")
-            return
-        
-        # Para a nova estrutura hierárquica, usa o primeiro resultado disponível
-        # (já que só temos um resultado por análise)
-        if not self.results:
-            messagebox.showwarning("Ops", "Nenhum resultado disponível.")
-            return
-        
-        # Pega o primeiro resultado
-        res = next(iter(self.results.values()))
-        self._open_details_window(res)
-
-    def _open_details_window(self, res: AnalysisResult):
-        win = tk.Toplevel(self)
-        win.title(f"Análise de Usucapião – {res.arquivo}")
-        win.geometry("1100x700")
-
-        frm = ttk.Frame(win)
-        frm.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Resumo geral
-        estado_ms = "SIM" if res.is_confrontante else "NÃO"
-        
-        # Converte confiança para percentual
-        if res.confidence is not None:
-            confianca_display = f"{int(res.confidence)}%"
-        else:
-            confianca_display = "N/A"
-            
-        ttk.Label(frm, text=f"Estado MS confrontante: {estado_ms}   |   Confiança: {confianca_display}").pack(anchor="w", pady=(0,6))
-
-        # Matrícula principal
-        ttk.Label(frm, text="Matrícula Principal (Usucapião):").pack(anchor="w")
-        box_principal = tk.Text(frm, height=3)
-        box_principal.pack(fill="x", pady=(0,8))
-        mat_principal_text = res.matricula_principal or "Não identificada"
-        if res.matricula_principal and res.matricula_principal in res.proprietarios_identificados:
-            proprietarios = res.proprietarios_identificados[res.matricula_principal]
-            mat_principal_text += f"\nProprietários: {', '.join(proprietarios)}"
-        box_principal.insert("1.0", mat_principal_text)
-        box_principal.configure(state="disabled")
-
-        # Matrículas encontradas
-        ttk.Label(frm, text="Todas as Matrículas Identificadas:").pack(anchor="w")
-        box_matriculas = tk.Text(frm, height=8)
-        box_matriculas.pack(fill="both", expand=False, pady=(0,8))
-        
-        matriculas_text = []
-        for i, matricula in enumerate(res.matriculas_encontradas, 1):
-            matriculas_text.append(f"{i}. Matrícula: {matricula.numero}")
-            if matricula.proprietarios:
-                matriculas_text.append(f"   Proprietários: {', '.join(matricula.proprietarios)}")
-            if matricula.confrontantes:
-                matriculas_text.append(f"   Confrontantes: {', '.join(matricula.confrontantes[:5])}" + ("..." if len(matricula.confrontantes) > 5 else ""))
-            matriculas_text.append("")
-        
-        if not matriculas_text:
-            matriculas_text = ["Nenhuma matrícula foi identificada estruturadamente"]
-            
-        box_matriculas.insert("1.0", "\n".join(matriculas_text))
-        box_matriculas.configure(state="disabled")
-
-        # Matrículas confrontantes
-        ttk.Label(frm, text="Matrículas Confrontantes:").pack(anchor="w")
-        box_confrontantes = tk.Text(frm, height=4)
-        box_confrontantes.pack(fill="x", pady=(0,8))
-        confrontantes_text = ", ".join(res.matriculas_confrontantes) if res.matriculas_confrontantes else "Nenhuma identificada"
-        box_confrontantes.insert("1.0", confrontantes_text)
-        box_confrontantes.configure(state="disabled")
-
-        # Raciocínio
-        ttk.Label(frm, text="🧠 Raciocínio Pericial da IA:").pack(anchor="w")
-        box_reasoning = tk.Text(frm, height=8, font=("TkDefaultFont", 10), wrap="word")
-        box_reasoning.pack(fill="both", expand=True)
-        
-        # Formata o reasoning para melhor legibilidade
-        reasoning_texto = res.reasoning if res.reasoning else "Raciocínio não disponível."
-        if reasoning_texto and not reasoning_texto.startswith(("📋", "🧠", "🎯")):
-            reasoning_texto = f"📋 {reasoning_texto}"
-        
-        box_reasoning.insert("1.0", reasoning_texto)
-        box_reasoning.configure(state="disabled")
-
     def poll_queue(self):
         try:
             while True:
@@ -2105,27 +2155,11 @@ class App(tk.Tk):
             "arquivo": f"{arquivos_processados} arquivo(s) processado(s)",
             "confrontacoes": confrontacoes_identificadas,
             "tempo": 0,  # Tempo será calculado posteriormente se necessário
-            "planta_gerada": False,
-            "modelo": self.model_var.get(),
+            "modelo": DEFAULT_MODEL,
             "matriculas_encontradas": total_matriculas
         }
         
         # Agenda feedback para depois da interface ser atualizada
-        pass  # Feedback automático gerenciado pelo sistema inteligente
-
-    def solicitar_feedback_planta(self, matricula: MatriculaInfo):
-        """Solicita feedback após geração de planta"""
-        dados_geracao = {
-            "arquivo": f"Matrícula {matricula.numero}",
-            "confrontacoes": len(matricula.lotes_confrontantes) if matricula.lotes_confrontantes else 0,
-            "tempo": 0,
-            "planta_gerada": True,
-            "modelo": self.model_var.get(),
-            "lote": matricula.lote,
-            "quadra": matricula.quadra
-        }
-
-        # Agenda feedback para depois da planta ser exibida
         pass  # Feedback automático gerenciado pelo sistema inteligente
 
     def check_for_updates(self):
@@ -2299,344 +2333,287 @@ class App(tk.Tk):
         self.feedback_system.on_fechamento_aplicacao()
         self.destroy()
 
-    def populate_results_tree(self, result):
-        """Popula a tabela com estrutura hierárquica: principal + confrontantes + não confrontantes"""
-        # Limpa resultados anteriores para este arquivo
-        for item in self.tree_results.get_children():
-            self.tree_results.delete(item)
-        
-        if not result:
+    def clear_result_views(self):
+        """Limpa os componentes utilizados para exibir os resultados."""
+        self._set_principal_content("")
+        trees = [
+            getattr(self, "tree_confrontantes_lotes", None),
+            getattr(self, "tree_confrontantes_outros", None),
+            getattr(self, "tree_nao_confrontantes", None),
+        ]
+        for tree in trees:
+            if tree is None:
+                continue
+            for item in tree.get_children():
+                tree.delete(item)
+
+    def _set_principal_content(self, text: str):
+        """Atualiza o conteúdo textual da aba de matrícula principal."""
+        widget = getattr(self, "txt_principal", None)
+        if widget is None:
             return
-        
-        # Encontra a matrícula principal nos dados
-        matricula_principal_obj = None
-        if result.matricula_principal:
-            for mat in result.matriculas_encontradas:
-                if mat.numero == result.matricula_principal:
-                    matricula_principal_obj = mat
-                    break
-        
-        estado_ms = "SIM" if result.matriculas_confrontantes and any("Estado" in str(conf) or "MS" in str(conf) for conf in result.matriculas_confrontantes) else "NÃO"
-        
-        # Debug e formatação da confiança
-        if result.confidence is not None:
-            print(f"🔍 DEBUG Confiança na tabela: {result.confidence} (tipo: {type(result.confidence)})")
-            # Se o valor está entre 0.0 e 1.0, multiplica por 100
-            if isinstance(result.confidence, (int, float)) and 0 <= result.confidence <= 1:
-                confianca = f"{int(result.confidence * 100)}%"
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        if text:
+            widget.insert("1.0", text)
+        widget.configure(state=tk.DISABLED)
+
+    def _insert_placeholder_row(self, tree, message):
+        """Insere uma linha informativa quando não há dados disponíveis."""
+        if tree is None:
+            return
+        columns = tree["columns"]
+        if isinstance(columns, str):
+            columns = (columns,)
+        num_cols = len(columns)
+        if num_cols == 0:
+            tree.insert("", "end", text=message)
+            return
+        values = []
+        for idx in range(num_cols):
+            values.append(message if idx == 0 else "")
+        tree.insert("", "end", values=tuple(values))
+
+    def populate_results_tree(self, result):
+        """Atualiza as abas de resultados respeitando as especificidades de cada tipo de matrícula."""
+        self.clear_result_views()
+
+        if not result:
+            self._set_principal_content("Nenhum resultado processado.")
+            self._insert_placeholder_row(self.tree_confrontantes_lotes, "Sem confrontantes identificados.")
+            self._insert_placeholder_row(self.tree_confrontantes_outros, "Sem confrontantes especiais.")
+            self._insert_placeholder_row(self.tree_nao_confrontantes, "Sem matrículas anexadas.")
+            return
+
+        matriculas_map = {mat.numero: mat for mat in result.matriculas_encontradas}
+
+        def owners_for(matricula_num: Optional[str]) -> List[str]:
+            if not matricula_num:
+                return []
+            proprietarios = result.proprietarios_identificados.get(matricula_num)
+            if proprietarios:
+                return [p for p in proprietarios if p and p.upper() != "N/A"]
+            mat_obj = matriculas_map.get(matricula_num)
+            if mat_obj and mat_obj.proprietarios:
+                return [p for p in mat_obj.proprietarios if p and p.upper() != "N/A"]
+            return []
+
+        def format_direction(direction: Optional[str]) -> str:
+            if not direction:
+                return "Não informada"
+            normalized = direction.strip()
+            if not normalized:
+                return "Não informada"
+            if len(normalized) <= 3:
+                return normalized.upper()
+            return normalized[0].upper() + normalized[1:].lower()
+
+        def join_with_overflow(items: List[str], limit: int = 3) -> str:
+            items = [item for item in items if item]
+            if not items:
+                return ""
+            if len(items) <= limit:
+                return "; ".join(items)
+            return "; ".join(items[:limit]) + f" (+{len(items) - limit})"
+
+        matricula_principal_obj = matriculas_map.get(result.matricula_principal) if result.matricula_principal else None
+        numero_principal = result.matricula_principal or "Não identificada"
+
+        if result.confidence is None:
+            confianca_display = "N/A"
+        elif isinstance(result.confidence, (int, float)):
+            if 0 <= result.confidence <= 1:
+                confianca_display = f"{int(result.confidence * 100)}%"
             else:
-                confianca = f"{int(result.confidence)}%"
+                confianca_display = f"{int(result.confidence)}%"
         else:
-            confianca = "N/A"
-        
-        # Insere matrícula principal - cada proprietário em linha separada
-        proprietarios_principal = ["N/A"]  # Valor padrão
-        lote_quadra_principal = ""
-        
-        if matricula_principal_obj:
-            proprietarios_principal = matricula_principal_obj.proprietarios
-            if not proprietarios_principal:
-                proprietarios_principal = ["N/A"]
-            
-            # Formata informação de lote/quadra da matrícula principal
-            if matricula_principal_obj.lote or matricula_principal_obj.quadra:
-                lote_parts = []
-                if matricula_principal_obj.lote:
-                    lote_parts.append(f"Lote {matricula_principal_obj.lote}")
-                if matricula_principal_obj.quadra:
-                    lote_parts.append(f"Quadra {matricula_principal_obj.quadra}")
-                lote_quadra_principal = " / ".join(lote_parts)
-        
-        if matricula_principal_obj:
-            # Primeira linha da matrícula principal (com o primeiro proprietário)
-            principal_id = self.tree_results.insert("", "end", text="🏠", values=(
-                result.matricula_principal,
-                lote_quadra_principal,
-                "Principal",
-                proprietarios_principal[0],
-                estado_ms,
-                confianca
-            ))
-            
-            # Linhas adicionais para outros proprietários da matrícula principal
-            for i, proprietario in enumerate(proprietarios_principal[1:], 1):
-                self.tree_results.insert(principal_id, "end", text="", values=(
-                    "",  # Matrícula vazia nas linhas de proprietários adicionais
-                    "",  # Lote/Quadra vazio
-                    "",  # Tipo vazio
-                    proprietario,
-                    "",  # Estado MS só na primeira linha
-                    ""   # Confiança só na primeira linha
-                ))
+            confianca_display = str(result.confidence)
+
+        estado_ms_display = "SIM" if result.is_confrontante else "NÃO"
+        lotes_confrontantes_lista = result.lotes_confrontantes or []
+        matriculas_confrontantes_lista = result.matriculas_confrontantes or []
+        matriculas_nao_confrontantes_lista = result.matriculas_nao_confrontantes or []
+        confrontantes_total = len(lotes_confrontantes_lista) if lotes_confrontantes_lista else len(matriculas_confrontantes_lista)
+        especiais_total = len([c for c in lotes_confrontantes_lista if (c.tipo or "").lower() not in {"lote", "matricula"}])
+        missing_confrontantes = []
+        for ident in result.lotes_sem_matricula or []:
+            if ident and ident not in missing_confrontantes:
+                missing_confrontantes.append(ident)
+        for conf in lotes_confrontantes_lista:
+            tipo_key = (conf.tipo or "").lower()
+            if tipo_key in {"lote", "matricula"} and not conf.matricula_anexada:
+                ident = (conf.identificador or "Confrontante sem identificação").strip()
+                if ident and ident not in missing_confrontantes:
+                    missing_confrontantes.append(ident)
+        nao_confrontantes_total = len(matriculas_nao_confrontantes_lista)
+
+        if missing_confrontantes:
+            estado_ms_display = "DESCONHECIDO"
+            estado_ms_detail = f"{len(missing_confrontantes)} confrontante(s) sem matrícula anexada"
         else:
-            # Se não há matrícula principal identificada, mostra informação geral
-            principal_id = self.tree_results.insert("", "end", text="📄", values=(
-                result.matricula_principal or "Não identificada",
+            estado_ms_display = "SIM" if result.is_confrontante else "NÃO"
+            estado_ms_detail = ""
+
+        lote_parts = []
+        if matricula_principal_obj and matricula_principal_obj.lote:
+            lote_parts.append(f"Lote {matricula_principal_obj.lote}")
+        if matricula_principal_obj and matricula_principal_obj.quadra:
+            lote_parts.append(f"Quadra {matricula_principal_obj.quadra}")
+        estado_value = estado_ms_display if not estado_ms_detail else f"{estado_ms_display} — {estado_ms_detail}"
+
+        principal_lines: List[str] = []
+        principal_lines.append("RELATÓRIO DA MATRÍCULA PRINCIPAL")
+        principal_lines.append("")
+        principal_lines.append(f"Matrícula: {numero_principal}")
+        principal_lines.append(f"Arquivo analisado: {result.arquivo}")
+        if lote_parts:
+            principal_lines.append(f"Lote / Quadra: {' / '.join(lote_parts)}")
+        principal_lines.append(f"Estado MS confrontante: {estado_value}")
+        principal_lines.append(f"Confiança da IA: {confianca_display}")
+        if result.confrontacao_completa is not None:
+            status = "Sim" if result.confrontacao_completa else "Não"
+            principal_lines.append(f"Confrontação completa: {status}")
+        principal_lines.append(f"Total de confrontantes: {confrontantes_total}")
+        if especiais_total:
+            principal_lines.append(f"Confrontantes especiais: {especiais_total}")
+        if missing_confrontantes:
+            missing_display = join_with_overflow(missing_confrontantes, limit=3) or "Identificadores não informados"
+            principal_lines.append(f"Sem matrícula analisável: {missing_display}")
+        principal_lines.append(f"Não confrontantes anexados: {nao_confrontantes_total}")
+        principal_lines.append(f"Matrículas analisadas: {len(result.matriculas_encontradas)}")
+
+        proprietarios_principal = owners_for(result.matricula_principal)
+        principal_lines.append("")
+        principal_lines.append("Proprietários identificados:")
+        if proprietarios_principal:
+            for owner in proprietarios_principal:
+                principal_lines.append(f"  • {owner}")
+        else:
+            principal_lines.append("  • Não informado")
+
+        self._set_principal_content("\n".join(principal_lines))
+
+        lotes_normais = []
+        especiais = []
+        for conf in lotes_confrontantes_lista:
+            tipo_key = (conf.tipo or "outros").lower()
+            if tipo_key in {"lote", "matricula"}:
+                lotes_normais.append(conf)
+            else:
+                especiais.append(conf)
+        lotes_normais.sort(key=lambda c: ((c.direcao or "").lower(), c.identificador or ""))
+        especiais.sort(key=lambda c: ((c.tipo or "").lower(), c.identificador or ""))
+
+        lotes_inseridos = 0
+        for conf in lotes_normais:
+            owners = owners_for(conf.matricula_anexada)
+            owners_text = join_with_overflow(owners)
+            matricula_value = conf.matricula_anexada or "Não anexada"
+            if not conf.matricula_anexada:
+                ident = (conf.identificador or "Confrontante sem identificação").strip()
+                if ident and ident not in missing_confrontantes:
+                    missing_confrontantes.append(ident)
+                if not owners_text:
+                    owners_text = "Proprietários não avaliados (sem matrícula anexada)"
+            self.tree_confrontantes_lotes.insert(
                 "",
-                "Documento",
-                f"{len(result.matriculas_encontradas)} matrícula(s) encontrada(s)",
-                estado_ms,
-                confianca
-            ))
-        
-        # Insere lotes confrontantes organizados por localização
-        if result.lotes_confrontantes:
-            # Agrupa confrontantes por direção
-            confrontantes_por_direcao = {}
-            for lote_confronta in result.lotes_confrontantes:
-                direcao = lote_confronta.direcao or "Não especificada"
-                if direcao not in confrontantes_por_direcao:
-                    confrontantes_por_direcao[direcao] = []
-                confrontantes_por_direcao[direcao].append(lote_confronta)
+                "end",
+                values=(
+                    format_direction(conf.direcao),
+                    conf.identificador or "—",
+                    matricula_value,
+                    owners_text or "",
+                ),
+            )
+            lotes_inseridos += 1
 
-            # Ordena direções para exibição consistente
-            ordem_direcoes = ['norte', 'sul', 'leste', 'oeste', 'nascente', 'poente', 'frente', 'fundos', 'direita', 'esquerda']
-            direcoes_ordenadas = []
-            for dir_pref in ordem_direcoes:
-                for dir_real in confrontantes_por_direcao.keys():
-                    if dir_real.lower() == dir_pref:
-                        direcoes_ordenadas.append(dir_real)
-                        break
-
-            # Adiciona direções restantes
-            for dir_real in confrontantes_por_direcao.keys():
-                if dir_real not in direcoes_ordenadas:
-                    direcoes_ordenadas.append(dir_real)
-
-            # Insere confrontantes por direção
-            for direcao in direcoes_ordenadas:
-                lotes = confrontantes_por_direcao[direcao]
-
-                # Cria nó da direção
-                direcao_formatada = direcao.upper()
-                direcao_id = self.tree_results.insert(principal_id, "end", text="🧭", values=(
+        if lotes_inseridos == 0 and matriculas_confrontantes_lista:
+            for mat_num in matriculas_confrontantes_lista:
+                mat_obj = matriculas_map.get(mat_num)
+                if mat_obj and mat_obj.lote:
+                    identificador = f"Lote {mat_obj.lote}"
+                    if mat_obj.quadra:
+                        identificador += f" / Quadra {mat_obj.quadra}"
+                else:
+                    identificador = f"Matrícula {mat_num}"
+                owners = owners_for(mat_num)
+                owners_text = join_with_overflow(owners)
+                self.tree_confrontantes_lotes.insert(
                     "",
-                    "",
-                    f"📍 {direcao_formatada}",
-                    f"{len(lotes)} confrontante(s)",
-                    "",
-                    ""
-                ))
+                    "end",
+                    values=("—", identificador, mat_num, owners_text),
+                )
+                lotes_inseridos += 1
 
-                # Insere cada confrontante da direção
-                for lote_confronta in lotes:
-                    # Encontra dados da matrícula se houver
-                    confrontante_obj = None
-                    if lote_confronta.matricula_anexada:
-                        for mat in result.matriculas_encontradas:
-                            if mat.numero == lote_confronta.matricula_anexada:
-                                confrontante_obj = mat
-                                break
+        if lotes_inseridos == 0:
+            self._insert_placeholder_row(self.tree_confrontantes_lotes, "Sem confrontantes de lote vinculados.")
 
-                    # Define identificador e proprietários
-                    identificador = lote_confronta.identificador
-                    if confrontante_obj:
-                        proprietarios = confrontante_obj.proprietarios or ["N/A"]
-                        # Formata lote/quadra se disponível
-                        lote_quadra = ""
-                        if confrontante_obj.lote or confrontante_obj.quadra:
-                            lote_parts = []
-                            if confrontante_obj.lote:
-                                lote_parts.append(f"Lote {confrontante_obj.lote}")
-                            if confrontante_obj.quadra:
-                                lote_parts.append(f"Quadra {confrontante_obj.quadra}")
-                            lote_quadra = " / ".join(lote_parts)
-                    else:
-                        proprietarios = ["N/A"]
-                        lote_quadra = ""
+        tipo_labels = {
+            "via_publica": "Via pública",
+            "via": "Via pública",
+            "estado": "Estado",
+            "pessoa": "Pessoa",
+            "curso_dagua": "Curso d'água",
+            "rio": "Curso d'água",
+            "outros": "Outros",
+        }
 
-                    # Define ícone baseado no tipo
-                    icone_tipo = {
-                        'lote': '🏘️',
-                        'matrícula': '📋',
-                        'pessoa': '👤',
-                        'via_publica': '🛣️',
-                        'estado': '🏛️',
-                        'outros': '📍'
-                    }.get(lote_confronta.tipo, '📍')
+        especiais_inseridos = 0
+        for conf in especiais:
+            tipo_key = (conf.tipo or "outros").lower()
+            tipo_label = tipo_labels.get(tipo_key, tipo_key.replace("_", " ").title())
+            detalhes_parts = []
+            if conf.matricula_anexada:
+                detalhes_parts.append(f"Matrícula anexada: {conf.matricula_anexada}")
+                owners = owners_for(conf.matricula_anexada)
+                owners_text = join_with_overflow(owners, limit=2)
+                if owners_text:
+                    detalhes_parts.append(f"Proprietários: {owners_text}")
+            elif tipo_key == "estado" and result.resumo_analise and result.resumo_analise.estado_ms_direitos:
+                if result.resumo_analise.estado_ms_direitos.tem_direitos:
+                    detalhes_parts.append("Direitos registrados em favor do Estado")
+                elif result.resumo_analise.estado_ms_direitos.detalhes:
+                    detalhes_parts.append("Direitos estadual sem confrontação direta")
+            detalhes = " | ".join(detalhes_parts)
 
-                    # Para lotes e matrículas: cria entrada especial mostrando identificador e proprietários
-                    if lote_confronta.tipo in ['lote', 'matricula'] and confrontante_obj and proprietarios and proprietarios[0] != "N/A":
-                        # Linha principal: mostra identificador do lote na coluna "Tipo" e proprietários na coluna "Proprietário"
-                        if len(proprietarios) == 1:
-                            proprietario_display = proprietarios[0]
-                        elif len(proprietarios) == 2:
-                            proprietario_display = f"{proprietarios[0]} e {proprietarios[1]}"
-                        else:
-                            proprietario_display = f"{proprietarios[0]} e mais {len(proprietarios)-1}"
-
-                        # Insere linha mostrando lote e seus proprietários
-                        conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
-                            lote_confronta.matricula_anexada or "",
-                            lote_quadra,
-                            identificador,  # Ex: "lote 11" na coluna Tipo
-                            proprietario_display,  # Nomes dos proprietários na coluna Proprietário
-                            "",
-                            ""
-                        ))
-
-                        # Para lotes com mais de 2 proprietários, adiciona todos como sub-itens para clareza
-                        if len(proprietarios) > 2:
-                            for proprietario in proprietarios:
-                                self.tree_results.insert(conf_id, "end", text="", values=(
-                                    "",
-                                    "",
-                                    "",
-                                    f"  👤 {proprietario}",
-                                    "",
-                                    ""
-                                ))
-                    else:
-                        # Para outros tipos (ruas, estado, etc): comportamento normal
-                        conf_id = self.tree_results.insert(direcao_id, "end", text=f"    {icone_tipo}", values=(
-                            lote_confronta.matricula_anexada or "",
-                            lote_quadra,
-                            lote_confronta.tipo.title(),
-                            identificador,  # Nome da rua, estado, etc. na coluna Proprietário
-                            "",
-                            ""
-                        ))
-
-        # Fallback: Insere matrículas confrontantes antigas (caso não haja lotes_confrontantes)
-        elif result.matriculas_confrontantes:
-            for mat_num in result.matriculas_confrontantes:
-                # Encontra dados da matrícula confrontante
-                confrontante_obj = None
-                for mat in result.matriculas_encontradas:
-                    if mat.numero == mat_num:
-                        confrontante_obj = mat
-                        break
-
-                proprietarios_confrontante = confrontante_obj.proprietarios if confrontante_obj else ["N/A"]
-                if not proprietarios_confrontante:
-                    proprietarios_confrontante = ["N/A"]
-
-                # Formata informação de lote/quadra da confrontante
-                lote_quadra_confrontante = ""
-                if confrontante_obj and (confrontante_obj.lote or confrontante_obj.quadra):
-                    lote_parts = []
-                    if confrontante_obj.lote:
-                        lote_parts.append(f"Lote {confrontante_obj.lote}")
-                    if confrontante_obj.quadra:
-                        lote_parts.append(f"Quadra {confrontante_obj.quadra}")
-                    lote_quadra_confrontante = " / ".join(lote_parts)
-
-                # Primeira linha da matrícula confrontante
-                conf_id = self.tree_results.insert(principal_id, "end", text="  ↳", values=(
-                    mat_num,
-                    lote_quadra_confrontante,
-                    "Confrontante",
-                    proprietarios_confrontante[0],
-                    "",  # Estado MS só na principal
-                    ""   # Confiança só na principal
-                ))
-
-                # Linhas adicionais para outros proprietários da confrontante
-                for proprietario in proprietarios_confrontante[1:]:
-                    self.tree_results.insert(conf_id, "end", text="", values=(
-                        "",  # Matrícula vazia nas linhas de proprietários adicionais
-                        "",  # Lote/Quadra vazio
-                        "",  # Tipo vazio
-                        proprietario,
-                        "",  # Estado MS só na principal
-                        ""   # Confiança só na principal
-                    ))
-
-        # Insere seção de LOTES NÃO CONFRONTANTES (se houver)
-        if result.matriculas_nao_confrontantes:
-            # Cria nó da seção de não confrontantes
-            nao_confrontantes_id = self.tree_results.insert(principal_id, "end", text="📋", values=(
+            self.tree_confrontantes_outros.insert(
                 "",
+                "end",
+                values=(
+                    tipo_label,
+                    conf.identificador or "—",
+                    format_direction(conf.direcao),
+                    detalhes,
+                ),
+            )
+            especiais_inseridos += 1
+
+        if especiais_inseridos == 0:
+            self._insert_placeholder_row(self.tree_confrontantes_outros, "Sem confrontantes especiais identificados.")
+
+        nao_conf_inseridos = 0
+        for mat_num in matriculas_nao_confrontantes_lista:
+            mat_obj = matriculas_map.get(mat_num)
+            if mat_obj and mat_obj.lote:
+                identificador = f"Lote {mat_obj.lote}"
+                if mat_obj.quadra:
+                    identificador += f" / Quadra {mat_obj.quadra}"
+            else:
+                identificador = f"Matrícula {mat_num}"
+            owners = owners_for(mat_num)
+            owners_text = join_with_overflow(owners)
+            self.tree_nao_confrontantes.insert(
                 "",
-                "📋 LOTES NÃO CONFRONTANTES",
-                f"{len(result.matriculas_nao_confrontantes)} lote(s) anexado(s)",
-                "",
-                ""
-            ))
+                "end",
+                values=(mat_num, identificador, owners_text),
+            )
+            nao_conf_inseridos += 1
 
-            for mat_num in result.matriculas_nao_confrontantes:
-                # Encontra dados da matrícula não confrontante
-                nao_confrontante_obj = None
-                for mat in result.matriculas_encontradas:
-                    if mat.numero == mat_num:
-                        nao_confrontante_obj = mat
-                        break
+        if nao_conf_inseridos == 0:
+            self._insert_placeholder_row(self.tree_nao_confrontantes, "Sem matrículas não confrontantes anexadas.")
 
-                proprietarios_nao_confrontante = nao_confrontante_obj.proprietarios if nao_confrontante_obj else ["N/A"]
-                if not proprietarios_nao_confrontante:
-                    proprietarios_nao_confrontante = ["N/A"]
-
-                # Formata informação de lote/quadra
-                lote_quadra_nao_confrontante = ""
-                if nao_confrontante_obj and (nao_confrontante_obj.lote or nao_confrontante_obj.quadra):
-                    lote_parts = []
-                    if nao_confrontante_obj.lote:
-                        lote_parts.append(f"Lote {nao_confrontante_obj.lote}")
-                    if nao_confrontante_obj.quadra:
-                        lote_parts.append(f"Quadra {nao_confrontante_obj.quadra}")
-                    lote_quadra_nao_confrontante = " / ".join(lote_parts)
-
-                # Define identificador do lote
-                identificador_lote = f"Lote {nao_confrontante_obj.lote}" if nao_confrontante_obj and nao_confrontante_obj.lote else f"Matrícula {mat_num}"
-
-                # Primeira linha da matrícula não confrontante
-                nao_conf_id = self.tree_results.insert(nao_confrontantes_id, "end", text="    🏘️", values=(
-                    mat_num,
-                    lote_quadra_nao_confrontante,
-                    "Lote",
-                    identificador_lote,
-                    "",
-                    ""
-                ))
-
-                # Adiciona proprietários como sub-itens
-                if proprietarios_nao_confrontante and proprietarios_nao_confrontante[0] != "N/A":
-                    for proprietario in proprietarios_nao_confrontante:
-                        self.tree_results.insert(nao_conf_id, "end", text="", values=(
-                            "",
-                            "",
-                            "",
-                            f"  👤 {proprietario}",
-                            "",
-                            ""
-                        ))
-
-        # Nota: lotes_sem_matricula agora são incluídos em lotes_confrontantes
-        # sem necessidade de marcar como "faltantes" separadamente
-        
-        # Expande automaticamente a árvore
-        self.tree_results.item(principal_id, open=True)
-        for child in self.tree_results.get_children(principal_id):
-            self.tree_results.item(child, open=True)
-        
-        # Aplica estilo à matrícula principal
-        self.configure_tree_styles()
-
-    def configure_tree_styles(self):
-        """Configura estilos visuais para a tabela hierárquica"""
-        # Configura tags para diferentes tipos de linha
-        self.tree_results.tag_configure("principal", background="#E8F4FD", font=("TkDefaultFont", 9, "bold"))
-        self.tree_results.tag_configure("confrontante", background="#F0F8F0")  # Verde claro
-        self.tree_results.tag_configure("nao_confrontante", background="#FFF8F0")  # Laranja claro
-        self.tree_results.tag_configure("faltante", background="#FFF0F0")  # Vermelho claro
-        
-        # Aplica tags aos itens
-        for item in self.tree_results.get_children():
-            # Item principal
-            self.tree_results.item(item, tags=("principal",))
-            # Itens filhos (confrontantes, não confrontantes, faltantes)
-            for child in self.tree_results.get_children(item):
-                child_values = self.tree_results.item(child, "values")
-                if len(child_values) > 2:
-                    tipo = child_values[2]  # coluna "Tipo"
-                    if tipo == "Confrontante":
-                        self.tree_results.item(child, tags=("confrontante",))
-                    elif tipo == "Não Confrontante":
-                        self.tree_results.item(child, tags=("nao_confrontante",))
-                    elif tipo == "Falta Matrícula":
-                        self.tree_results.item(child, tags=("faltante",))
-                    else:
-                        self.tree_results.item(child, tags=("confrontante",))  # padrão
+        if hasattr(self, "results_notebook"):
+            self.results_notebook.select(self.tab_principal)
 
     def update_summary(self, result):
         """Atualiza o campo de resumo com o reasoning do modelo"""
@@ -2832,16 +2809,6 @@ class App(tk.Tk):
         self.txt_resumo.insert("1.0", text)
         self.txt_resumo.config(state=tk.DISABLED)
 
-    def show_model_info(self):
-        """Mostra informações sobre modelos com suporte a visão"""
-        info = (
-            "MODELOS RECOMENDADOS COM VISÃO:\n\n"
-            "• google/gemini-2.5-pro (Recomendado)\n"
-            "• anthropic/claude-opus-4\n"
-            "• openai/gpt-5\n"
-        )
-        messagebox.showinfo("Modelos com Suporte a Visão", info)
-    
     def diagnose_file_issues(self, file_path: str) -> str:
         """Diagnostica problemas comuns com arquivos"""
         issues = []
@@ -2967,877 +2934,316 @@ class App(tk.Tk):
         else:
             self._blink_count = 0
 
-    def generate_property_plant(self):
-        """Gera planta do imóvel com base nos dados geométricos extraídos"""
+    def generate_full_report(self):
+        """Solicita à LLM um relatório completo com todos os dados extraídos."""
+        if self.cached_full_report_text and self.cached_full_report_payload:
+            self.log("📄 Reabrindo relatório completo já gerado.")
+            self._show_full_report_window(self.cached_full_report_text, self.cached_full_report_payload, None)
+            return
+
         if not self.results:
-            messagebox.showwarning("Nenhum resultado", "Processe pelo menos um arquivo antes de gerar a planta.")
+            messagebox.showwarning("Nenhum resultado", "Processe pelo menos um arquivo antes de gerar o relatório completo.")
             return
-        
-        # Encontra a matrícula principal
-        matricula_principal = None
-        for file_path, result in self.results.items():
-            if result.matricula_principal:
-                for matricula in result.matriculas_encontradas:
-                    if matricula.numero == result.matricula_principal:
-                        matricula_principal = matricula
-                        break
-                if matricula_principal:
-                    break
-        
-        if not matricula_principal:
-            messagebox.showwarning("Matrícula não encontrada", "Não foi possível identificar a matrícula principal.")
-            return
-        
-        # Verifica se há algum dado geométrico, mas prossegue mesmo com dados parciais
-        dados_geom = matricula_principal.dados_geometricos
-        if not dados_geom:
-            print("⚠️ Nenhum dado geométrico encontrado, gerando planta conceitual...")
-        elif not dados_geom.medidas:
-            print("⚠️ Medidas específicas não encontradas, usando dados disponíveis...")
-        
-        # Gera a planta
-        self._generate_plant_image(matricula_principal)
 
-    def _generate_plant_image(self, matricula: MatriculaInfo):
-        """Gera a imagem da planta usando matplotlib"""
-        try:
-            # Mostra janela de progresso
-            progress_window = tk.Toplevel(self)
-            progress_window.title("Gerando Planta do Imóvel")
-            progress_window.geometry("400x150")
-            progress_window.transient(self)
-            progress_window.grab_set()
-            
-            ttk.Label(progress_window, text="🏗️ Gerando planta do imóvel...").pack(pady=20)
-            progress_bar = ttk.Progressbar(progress_window, mode="indeterminate")
-            progress_bar.pack(pady=10, padx=20, fill="x")
-            progress_bar.start()
-            
-            def generate_in_thread():
-                try:
-                    # Gera a imagem usando matplotlib
-                    image_url = self._generate_plant_with_matplotlib(matricula)
-                    
-                    if image_url:
-                        # Cria prompt informativo para exibir na janela de resultado
-                        plant_prompt = self._create_info_text(matricula)
-                        progress_window.after(0, lambda: self._show_generated_image(image_url, plant_prompt, progress_window))
-                    else:
-                        progress_window.after(0, lambda: self._show_plant_error("Não foi possível gerar a planta", progress_window))
-                    
-                except Exception as e:
-                    progress_window.after(0, lambda: self._show_plant_error(str(e), progress_window))
-            
-            # Executa em thread separada
-            thread = threading.Thread(target=generate_in_thread, daemon=True)
-            thread.start()
-            
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao gerar planta: {e}")
-    
-    def _create_info_text(self, matricula: MatriculaInfo) -> str:
-        """Cria texto informativo sobre a planta gerada"""
-        info = f"""PLANTA TÉCNICA GERADA COM MATPLOTLIB
+        model = FULL_REPORT_MODEL
 
-🏠 INFORMAÇÕES DO IMÓVEL:
-- Matrícula: {matricula.numero or 'N/A'}
-- Lote: {matricula.lote or 'N/A'}
-- Quadra: {matricula.quadra or 'N/A'}
+        result = list(self.results.values())[-1]
 
-👥 PROPRIETÁRIO(S):"""
-        
-        for prop in matricula.proprietarios:
-            info += f"\n- {prop}"
-            
-        if matricula.dados_geometricos:
-            dados = matricula.dados_geometricos
-            info += f"\n\n📐 DADOS GEOMÉTRICOS:"
-            if dados.area_total:
-                info += f"\n- Área Total: {dados.area_total}"
-            if dados.formato:
-                info += f"\n- Formato: {dados.formato}"
-            if dados.medidas:
-                info += f"\n- Medidas: {dados.medidas}"
-                
-        info += f"\n\n✅ Planta gerada usando matplotlib - precisão técnica garantida!"
-        return info
+        self.btn_full_report.config(state="disabled")
+        self.log("📝 Gerando relatório completo com IA...")
 
-    def _create_plant_prompt(self, matricula: MatriculaInfo) -> str:
-        """Cria prompt estruturado para geração da planta, adaptando-se aos dados disponíveis"""
-        dados = matricula.dados_geometricos
-        
-        prompt = f"""Crie uma planta baixa técnica e profissional do seguinte imóvel:
+        progress_window = tk.Toplevel(self)
+        progress_window.title("Gerando Relatório Completo")
+        progress_window.geometry("420x160")
+        progress_window.transient(self)
+        progress_window.grab_set()
 
-🏠 INFORMAÇÕES DO IMÓVEL:
-- Matrícula: {matricula.numero or 'N/A'}
-- Lote: {matricula.lote or 'N/A'}
-- Quadra: {matricula.quadra or 'N/A'}"""
+        ttk.Label(progress_window, text="🧾 Elaborando relatório completo da matrícula...").pack(pady=20)
+        progress_bar = ttk.Progressbar(progress_window, mode="indeterminate")
+        progress_bar.pack(pady=10, padx=20, fill="x")
+        progress_bar.start()
 
-        # Adiciona formato se disponível
-        if dados and dados.formato:
-            prompt += f"\n- Formato: {dados.formato}"
-        else:
-            prompt += f"\n- Formato: Retangular (padrão)"
-
-        prompt += "\n\n📏 MEDIDAS DISPONÍVEIS (em metros):"
-        
-        # Adiciona medidas se disponíveis
-        medidas_encontradas = False
-        if dados and dados.medidas:
-            for direcao, medida in dados.medidas.items():
-                if medida:  # Só adiciona se a medida não for vazia
-                    prompt += f"\n- {direcao.title()}: {medida}m"
-                    medidas_encontradas = True
-        
-        if not medidas_encontradas:
-            prompt += "\n- Medidas específicas não informadas"
-            # Tenta extrair informações da descrição da matrícula
-            if matricula.descricao:
-                prompt += f"\n- DESCRIÇÃO DISPONÍVEL: {matricula.descricao[:200]}..."
-                prompt += "\n- (Extrair dimensões aproximadas da descrição acima)"
-        
-        prompt += "\n\n🧭 CONFRONTAÇÕES IDENTIFICADAS:"
-        confrontacoes_encontradas = False
-        
-        # Tenta usar dados geométricos primeiro
-        if dados and dados.confrontantes:
-            for direcao, confrontante in dados.confrontantes.items():
-                if confrontante:
-                    prompt += f"\n- {direcao.title()}: {confrontante}"
-                    confrontacoes_encontradas = True
-        
-        # Se não há confrontações nos dados geométricos, usa as confrontações gerais da matrícula
-        if not confrontacoes_encontradas and matricula.confrontantes:
-            for i, confrontante in enumerate(matricula.confrontantes):
-                if confrontante:
-                    prompt += f"\n- Lado {i+1}: {confrontante}"
-                    confrontacoes_encontradas = True
-        
-        if not confrontacoes_encontradas:
-            prompt += "\n- Confrontações não especificadas (usar confrontantes genéricos)"
-        
-        # Adiciona área se disponível
-        if dados and dados.area_total:
-            prompt += f"\n\n📊 ÁREA TOTAL: {dados.area_total} m²"
-        else:
-            prompt += f"\n\n📊 ÁREA TOTAL: A ser calculada pelas dimensões estimadas"
-        
-        prompt += "\n\n📐 ÂNGULOS:"
-        if dados and dados.angulos:
-            for direcao, angulo in dados.angulos.items():
-                if angulo:
-                    prompt += f"\n- {direcao.title()}: {angulo}°"
-        else:
-            prompt += "\n- Todos os ângulos: 90° (terreno retangular padrão)"
-        
-        prompt += f"""
-
-🎯 REQUISITOS TÉCNICOS:
-✅ Vista superior (planta baixa)
-✅ Escala gráfica visível (mesmo que aproximada)
-✅ Cotas com medidas disponíveis ou estimadas
-✅ Rosa dos ventos indicando orientação
-✅ Legenda identificando confrontantes conhecidos
-✅ Área total (exata ou estimada)
-✅ Estilo técnico profissional
-✅ Linhas precisas e limpas
-✅ Texto legível em fonte técnica
-
-📝 ADAPTAÇÕES QUANDO DADOS INCOMPLETOS:
-✅ Use dimensões proporcionais razoáveis
-✅ Indique medidas como "aprox." quando estimadas
-✅ Crie confrontações genéricas se necessário
-✅ Mantenha aparência profissional mesmo com dados parciais
-
-🚫 NÃO INCLUIR:
-❌ Construções internas
-❌ Móveis ou decoração
-❌ Vegetação detalhada
-❌ Cores excessivas
-
-RESULTADO: Planta baixa técnica do terreno usando todos os dados disponíveis, complementando informações em falta com estimativas razoáveis e profissionais."""
-        
-        return prompt
-
-    def _generate_plant_with_matplotlib(self, matricula: MatriculaInfo) -> Optional[str]:
-        """Gera planta técnica usando matplotlib baseada nos dados geométricos"""
-        try:
-            print(f"🎨 Gerando planta técnica com matplotlib...")
-            
-            # Configura matplotlib para não mostrar em GUI separada
-            plt.switch_backend('Agg')
-            
-            # Cria figura com tamanho A4 landscape
-            fig, ax = plt.subplots(figsize=(11.7, 8.3), dpi=150)
-            ax.set_aspect('equal')
-            
-            # Extrai dados geométricos
-            dados_geom = matricula.dados_geometricos
-            medidas = dados_geom.medidas if dados_geom.medidas else {}
-            confrontantes = dados_geom.confrontantes if dados_geom.confrontantes else {}
-            
-            # Define coordenadas do terreno baseado nas medidas
-            coords = self._calculate_plot_coordinates(medidas, dados_geom.formato)
-            
-            if coords:
-                # Desenha o terreno
-                terreno = Polygon(coords, fill=False, edgecolor='black', linewidth=2)
-                ax.add_patch(terreno)
-                
-                # Adiciona medidas e confrontantes
-                self._add_measurements_and_labels(ax, coords, medidas, confrontantes)
-                
-                # Calcula limites e adiciona margem
-                x_coords = [p[0] for p in coords]
-                y_coords = [p[1] for p in coords]
-                margin = max(max(x_coords) - min(x_coords), max(y_coords) - min(y_coords)) * 0.2
-                
-                ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
-                ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
-            else:
-                # Fallback: desenha terreno genérico baseado na descrição
-                self._draw_generic_plot(ax, matricula)
-            
-            # Configura estilo técnico
-            ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
-            ax.set_title(f'PLANTA DO IMÓVEL - LOTE {matricula.lote}, QUADRA {matricula.quadra}\n'
-                        f'MATRÍCULA Nº {matricula.numero}', 
-                        fontsize=14, fontweight='bold', pad=20)
-            
-            # Remove ticks mas mantém grid
-            ax.set_xticks([])
-            ax.set_yticks([])
-            
-            # Adiciona legenda e informações
-            self._add_plant_legend(ax, matricula)
-            
-            # Salva em buffer de memória
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='png', bbox_inches='tight', 
-                       facecolor='white', edgecolor='none')
-            img_buffer.seek(0)
-            
-            # Converte para base64
-            import base64
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-            data_url = f"data:image/png;base64,{img_base64}"
-            
-            plt.close(fig)  # Limpa a figura da memória
-            print(f"✅ Planta gerada com sucesso usando matplotlib")
-            
-            # Solicita feedback para geração de planta
-            pass  # Feedback automático gerenciado pelo sistema inteligente
-            
-            return data_url
-            
-        except Exception as e:
-            print(f"❌ Erro ao gerar planta com matplotlib: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _calculate_plot_coordinates(self, medidas: Dict, formato: str) -> List[Tuple[float, float]]:
-        """Calcula coordenadas do terreno baseado nas medidas"""
-        try:
-            # Se não há medidas, gera terreno padrão
-            if not medidas:
-                print("⚠️ Nenhuma medida encontrada, usando terreno padrão")
-                return [(0, 0), (20, 0), (20, 30), (0, 30)]  # Terreno padrão 20x30
-
-            # Extrai medidas principais com fallback
-            frente = self._extract_number(medidas.get('frente', '')) or \
-                     self._extract_number(medidas.get('lateral_direita', '')) or \
-                     self._extract_number(medidas.get('lateral_esquerda', '')) or 20
-
-            fundos = self._extract_number(medidas.get('fundos', '')) or \
-                     self._extract_number(medidas.get('lateral_direita', '')) or \
-                     self._extract_number(medidas.get('lateral_esquerda', '')) or frente
-
-            lado_direito = self._extract_number(medidas.get('lado_direito', '')) or \
-                          self._extract_number(medidas.get('lateral_direita', '')) or \
-                          self._extract_number(medidas.get('direita', '')) or 30
-
-            lado_esquerdo = self._extract_number(medidas.get('lado_esquerdo', '')) or \
-                           self._extract_number(medidas.get('lateral_esquerda', '')) or \
-                           self._extract_number(medidas.get('esquerda', '')) or lado_direito
-
-            print(f"📏 Medidas extraídas: frente={frente}, fundos={fundos}, direito={lado_direito}, esquerdo={lado_esquerdo}")
-            
-            # Define valores padrão baseados nos dados disponíveis
-            if formato.lower() == 'retangular' or not formato:
-                # Terreno retangular
-                width = frente or fundos or 20  # Usa frente, fundos ou valor padrão
-                height = lado_direito or lado_esquerdo or 30  # Usa um dos lados ou valor padrão
-                
-                return [
-                    (0, 0),           # Canto inferior esquerdo
-                    (width, 0),       # Canto inferior direito
-                    (width, height),  # Canto superior direito
-                    (0, height)       # Canto superior esquerdo
-                ]
-            else:
-                # Para formatos não retangulares, tenta usar todas as medidas
-                coords = []
-                if frente:
-                    coords.extend([(0, 0), (frente, 0)])
-                if lado_direito and frente:
-                    coords.append((frente, lado_direito))
-                if fundos and lado_direito:
-                    coords.append((frente - fundos if fundos <= frente else 0, lado_direito))
-                if lado_esquerdo:
-                    coords.append((0, lado_direito - lado_esquerdo if lado_esquerdo <= lado_direito else 0))
-                    
-                return coords if len(coords) >= 3 else self._calculate_plot_coordinates(medidas, 'retangular')
-                
-        except Exception as e:
-            print(f"❌ Erro ao calcular coordenadas: {e}")
-            return None
-
-    def _extract_number(self, text: str) -> Optional[float]:
-        """Extrai número de uma string (ex: '20,00 metros' -> 20.0)"""
-        if not text:
-            return None
-        
-        import re
-        # Procura por padrões numéricos
-        matches = re.findall(r'(\d+(?:[,\.]\d+)?)', str(text))
-        if matches:
-            # Converte vírgula para ponto
-            number_str = matches[0].replace(',', '.')
+        def run_generation():
             try:
-                return float(number_str)
-            except ValueError:
-                return None
-        return None
+                payload_dict = self._build_full_report_payload(result, model)
+                payload_json = json.dumps(payload_dict, ensure_ascii=False, indent=2)
+                prompt = build_full_report_prompt(payload_json)
+                report_text = self._request_full_report(model, prompt)
+                self.cached_full_report_text = report_text.strip()
+                self.cached_full_report_payload = payload_json
+                self.after(0, lambda: self._show_full_report_window(report_text, payload_json, progress_window))
+            except Exception as exc:
+                self.after(0, lambda: self._show_full_report_error(str(exc), progress_window))
+            finally:
+                self.after(0, lambda: self.btn_full_report.config(state="normal"))
 
-    def _add_measurements_and_labels(self, ax, coords: List[Tuple[float, float]],
-                                   medidas: Dict, confrontantes: Dict):
-        """Adiciona medidas e rótulos de confrontantes na planta sem sobreposição"""
+        threading.Thread(target=run_generation, daemon=True).start()
+
+    def _request_full_report(self, model: str, prompt: str) -> str:
+        """Encapsula a chamada textual à OpenRouter adicionando tratamento de erro contextual."""
         try:
-            n_coords = len(coords)
-            if n_coords < 3:
-                return
-
-            # Mapeamento mais robusto baseado na posição real das linhas
-            for i in range(n_coords):
-                p1 = coords[i]
-                p2 = coords[(i + 1) % n_coords]
-
-                # Calcula ponto médio e direção da linha
-                mid_x = (p1[0] + p2[0]) / 2
-                mid_y = (p1[1] + p2[1]) / 2
-
-                # Calcula vetor da linha e sua orientação
-                dx = p2[0] - p1[0]
-                dy = p2[1] - p1[1]
-                line_length = (dx**2 + dy**2)**0.5
-
-                if line_length == 0:
-                    continue
-
-                # Vetor normal (perpendicular) à linha
-                normal_x = -dy / line_length
-                normal_y = dx / line_length
-
-                # Determina qual lado é baseado na posição
-                side_name, confront_key = self._determine_side_from_position(i, n_coords, dx, dy)
-
-                # Distâncias para evitar sobreposição
-                measure_offset = 3  # Distância para medidas
-                confront_offset = 8  # Distância para confrontantes (mais longe)
-
-                # Adiciona medida se disponível
-                measure_text = self._get_measurement_text(medidas, side_name)
-                if measure_text:
-                    # Posição da medida: mais próxima do terreno
-                    measure_x = mid_x + normal_x * measure_offset
-                    measure_y = mid_y + normal_y * measure_offset
-
-                    # Determina rotação para texto de medida
-                    angle = math.degrees(math.atan2(dy, dx))
-                    if abs(angle) > 90:
-                        angle -= 180
-
-                    ax.text(measure_x, measure_y, measure_text, ha='center', va='center',
-                           fontsize=9, fontweight='bold', color='blue',
-                           rotation=angle,
-                           bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
-
-                # Adiciona confrontante se disponível
-                confront_text = self._get_confrontant_text(confrontantes, confront_key)
-                if confront_text:
-                    # Posição do confrontante: mais afastada do terreno
-                    confront_x = mid_x + normal_x * confront_offset
-                    confront_y = mid_y + normal_y * confront_offset
-
-                    # Trunca texto longo para evitar poluição visual
-                    if len(confront_text) > 25:
-                        confront_text = confront_text[:22] + "..."
-
-                    ax.text(confront_x, confront_y, confront_text, ha='center', va='center',
-                           fontsize=8, style='italic', color='darkgreen',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
-
-        except Exception as e:
-            print(f"❌ Erro ao adicionar medidas: {e}")
-
-    def _determine_side_from_position(self, index: int, total_coords: int, dx: float, dy: float) -> Tuple[str, str]:
-        """Determina o lado baseado na posição e direção da linha"""
-        # Para terrenos retangulares (4 lados)
-        if total_coords == 4:
-            sides_map = [
-                ('frente', 'frente'),           # Lado inferior (0->1)
-                ('lateral_direita', 'direita'), # Lado direito (1->2)
-                ('fundos', 'fundos'),           # Lado superior (2->3)
-                ('lateral_esquerda', 'esquerda') # Lado esquerdo (3->0)
-            ]
-            return sides_map[index % 4]
-
-        # Para outros formatos, usa heurística baseada na direção
-        if abs(dx) > abs(dy):  # Linha mais horizontal
-            if dx > 0:
-                return ('frente', 'frente')
-            else:
-                return ('fundos', 'fundos')
-        else:  # Linha mais vertical
-            if dy > 0:
-                return ('lateral_direita', 'direita')
-            else:
-                return ('lateral_esquerda', 'esquerda')
-
-    def _get_measurement_text(self, medidas: Dict, side_name: str) -> str:
-        """Obtém texto de medida para um lado específico"""
-        # Tenta várias variações do nome do lado
-        possible_keys = [
-            side_name,
-            side_name.replace('lateral_', ''),
-            side_name.replace('_', ' '),
-            side_name.split('_')[-1] if '_' in side_name else side_name
-        ]
-
-        for key in possible_keys:
-            if key in medidas and medidas[key]:
-                value = str(medidas[key])
-                # Limpa e formata a medida
-                import re
-                numbers = re.findall(r'(\d+(?:[,\.]\d+)?)', value)
-                if numbers:
-                    return f"{numbers[0]}m"
-                return value
-        return ""
-
-    def _get_confrontant_text(self, confrontantes: Dict, confront_key: str) -> str:
-        """Obtém texto de confrontante para uma direção específica"""
-        # Tenta várias variações da direção
-        possible_keys = [
-            confront_key,
-            f"lateral_{confront_key}",
-            f"lado_{confront_key}",
-            confront_key.replace('direita', 'lateral_direita'),
-            confront_key.replace('esquerda', 'lateral_esquerda')
-        ]
-
-        for key in possible_keys:
-            if key in confrontantes and confrontantes[key]:
-                return str(confrontantes[key])
-        return ""
-
-    def _draw_generic_plot(self, ax, matricula: MatriculaInfo):
-        """Desenha terreno genérico quando não há dados geométricos suficientes"""
-        try:
-            # Desenha retângulo padrão 20x30
-            coords = [(0, 0), (20, 0), (20, 30), (0, 30)]
-            terreno = Polygon(coords, fill=False, edgecolor='black', linewidth=2)
-            ax.add_patch(terreno)
-            
-            # Adiciona texto indicativo
-            ax.text(10, 15, 'TERRENO\n(Medidas aproximadas)', ha='center', va='center',
-                   fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
-            
-            # Define limites
-            ax.set_xlim(-5, 25)
-            ax.set_ylim(-5, 35)
-            
-            print("🏗️ Planta genérica gerada (dados geométricos insuficientes)")
-            
-        except Exception as e:
-            print(f"❌ Erro ao desenhar planta genérica: {e}")
-
-    def _add_plant_legend(self, ax, matricula: MatriculaInfo):
-        """Adiciona legenda e informações na planta sem sobreposição"""
-        try:
-            # Calcula limites atuais do gráfico para posicionamento inteligente
-            xlim = ax.get_xlim()
-            ylim = ax.get_ylim()
-
-            # Cria informações da legenda de forma compacta
-            info_lines = []
-
-            # Proprietários (máximo 2 para economizar espaço)
-            if matricula.proprietarios:
-                if len(matricula.proprietarios) == 1:
-                    info_lines.append(f"PROPRIETÁRIO: {matricula.proprietarios[0][:30]}")
-                elif len(matricula.proprietarios) == 2:
-                    info_lines.append(f"PROPRIETÁRIOS:")
-                    info_lines.append(f"• {matricula.proprietarios[0][:25]}")
-                    info_lines.append(f"• {matricula.proprietarios[1][:25]}")
-                else:
-                    info_lines.append(f"PROPRIETÁRIOS: {matricula.proprietarios[0][:20]} e mais {len(matricula.proprietarios)-1}")
-
-            # Área total se disponível
-            if matricula.dados_geometricos and matricula.dados_geometricos.area_total:
-                area_text = str(matricula.dados_geometricos.area_total)
-                if 'm²' not in area_text and 'm2' not in area_text:
-                    area_text += " m²"
-                info_lines.append(f"ÁREA: {area_text}")
-
-            # Lote e quadra
-            if matricula.lote or matricula.quadra:
-                lote_info = []
-                if matricula.lote:
-                    lote_info.append(f"Lote {matricula.lote}")
-                if matricula.quadra:
-                    lote_info.append(f"Quadra {matricula.quadra}")
-                info_lines.append(" / ".join(lote_info))
-
-            if info_lines:
-                info_text = "\n".join(info_lines)
-
-                # Posiciona no canto superior esquerdo para evitar conflito com medidas
-                ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=8,
-                       verticalalignment='top', horizontalalignment='left',
-                       bbox=dict(boxstyle="round,pad=0.4", facecolor="lightblue", alpha=0.9))
-
-            # Adiciona rosa dos ventos no canto inferior direito
-            self._add_compass_rose(ax)
-
-            # Adiciona legenda de cores no canto inferior esquerdo
-            self._add_color_legend(ax)
-
-        except Exception as e:
-            print(f"❌ Erro ao adicionar legenda: {e}")
-
-    def _add_compass_rose(self, ax):
-        """Adiciona rosa dos ventos compacta"""
-        try:
-            # Posiciona no canto inferior direito
-            compass_x = 0.95
-            compass_y = 0.05
-
-            # Desenha cruz simples com pontos cardeais
-            ax.text(compass_x, compass_y + 0.03, 'N', transform=ax.transAxes,
-                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
-            ax.text(compass_x + 0.025, compass_y, 'L', transform=ax.transAxes,
-                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
-            ax.text(compass_x, compass_y - 0.03, 'S', transform=ax.transAxes,
-                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
-            ax.text(compass_x - 0.025, compass_y, 'O', transform=ax.transAxes,
-                   ha='center', va='center', fontsize=10, fontweight='bold', color='red')
-
-            # Linhas da cruz
-            ax.plot([compass_x, compass_x], [compass_y - 0.025, compass_y + 0.025],
-                   transform=ax.transAxes, color='red', linewidth=1)
-            ax.plot([compass_x - 0.02, compass_x + 0.02], [compass_y, compass_y],
-                   transform=ax.transAxes, color='red', linewidth=1)
-
-        except Exception as e:
-            print(f"❌ Erro ao adicionar rosa dos ventos: {e}")
-
-    def _add_color_legend(self, ax):
-        """Adiciona legenda de cores"""
-        try:
-            legend_text = "LEGENDA:\nMedidas\nConfrontantes"
-
-            ax.text(0.02, 0.15, legend_text, transform=ax.transAxes, fontsize=7,
-                   verticalalignment='top', horizontalalignment='left',
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-
-            # Adiciona pequenos quadrados coloridos
-            from matplotlib.patches import Rectangle
-
-            # Quadrado azul para medidas
-            rect_blue = Rectangle((0.12, 0.11), 0.01, 0.008, transform=ax.transAxes,
-                                facecolor='blue', alpha=0.7)
-            ax.add_patch(rect_blue)
-
-            # Quadrado verde para confrontantes
-            rect_green = Rectangle((0.12, 0.08), 0.01, 0.008, transform=ax.transAxes,
-                                 facecolor='darkgreen', alpha=0.7)
-            ax.add_patch(rect_green)
-
-        except Exception as e:
-            print(f"❌ Erro ao adicionar legenda de cores: {e}")
-
-    def _show_generated_image(self, image_url: str, prompt: str, progress_window: tk.Toplevel):
-        """Mostra a imagem gerada"""
-        progress_window.destroy()
-        
-        # Cria janela para mostrar a imagem
-        result_window = tk.Toplevel(self)
-        result_window.title("🏗️ Planta Gerada")
-        result_window.geometry("900x700")
-        result_window.transient(self)
-        
-        # Frame principal
-        main_frame = ttk.Frame(result_window)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Título
-        ttk.Label(main_frame, text="🏗️ Planta do Imóvel Gerada", 
-                 font=("Arial", 14, "bold")).pack(pady=(0,10))
-        
-        # Área da imagem
-        image_frame = ttk.Frame(main_frame, relief="solid", borderwidth=1)
-        image_frame.pack(fill="both", expand=True, pady=(0,10))
-        
-        try:
-            print(f"🖼️ Tentando exibir imagem...")
-            # Carrega e exibe a imagem real
-            image_data = self._download_image(image_url)
-            if image_data:
-                print(f"✅ Dados da imagem carregados: {len(image_data)} bytes")
-                from PIL import Image as PILImage
-                import io
-                
-                # Abre a imagem com PIL
-                pil_image = PILImage.open(io.BytesIO(image_data))
-                print(f"✅ Imagem aberta com PIL: {pil_image.size}")
-                
-                # Redimensiona para caber na janela (mantém proporção)
-                max_size = (800, 500)
-                pil_image.thumbnail(max_size, PILImage.Resampling.LANCZOS)
-                print(f"✅ Imagem redimensionada para: {pil_image.size}")
-                
-                # Converte para formato Tkinter PhotoImage
-                from PIL import ImageTk
-                photo = ImageTk.PhotoImage(pil_image)
-                
-                # Exibe a imagem
-                image_label = ttk.Label(image_frame, image=photo)
-                image_label.image = photo  # Mantém referência
-                image_label.pack(expand=True, padx=10, pady=10)
-                
-                # Armazena dados da imagem para salvar
-                self._current_image_data = image_data
-                self._current_image_url = image_url
-                print(f"✅ Imagem exibida com sucesso na interface")
-            else:
-                print(f"❌ Falha ao carregar dados da imagem")
-                error_text = f"""❌ Não foi possível carregar a imagem
-
-Possíveis causas:
-• URL da imagem inválida ou expirada
-• Problema de conexão com o servidor
-• Formato de imagem não suportado
-
-URL recebida: {image_url[:100]}..."""
-                ttk.Label(image_frame, text=error_text, justify="center").pack(expand=True)
-            
-        except Exception as e:
-            print(f"❌ Erro ao exibir imagem: {e}")
-            import traceback
-            traceback.print_exc()
-            error_text = f"""❌ Erro ao carregar imagem
-
-Detalhes do erro: {str(e)}
-
-URL: {image_url if isinstance(image_url, str) else 'N/A'}"""
-            ttk.Label(image_frame, text=error_text, justify="center").pack(expand=True)
-        
-        # Botões
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x")
-        
-        ttk.Button(button_frame, text="💾 Salvar Imagem", 
-                  command=lambda: self._save_image(image_url)).pack(side="left")
-        
-        ttk.Button(button_frame, text="📋 Ver Prompt", 
-                  command=lambda: self._show_prompt_window(prompt)).pack(side="left", padx=(10,0))
-        
-        ttk.Button(button_frame, text="Fechar", 
-                  command=result_window.destroy).pack(side="right")
-
-    def _download_image(self, image_content: str) -> Optional[bytes]:
-        """Baixa ou converte a imagem dependendo do formato"""
-        try:
-            print(f"🔍 Processando conteúdo da imagem: {image_content[:100]}...")
-            
-            if image_content.startswith("data:image"):
-                # Imagem em base64
-                print("📎 Decodificando imagem base64...")
-                import base64
-                header, data = image_content.split(",", 1)
-                return base64.b64decode(data)
-            elif image_content.startswith("http"):
-                # Imagem via URL
-                print(f"🌐 Baixando imagem da URL: {image_content}")
-                response = requests.get(image_content, timeout=30)
-                print(f"📡 Status do download: {response.status_code}")
-                if response.status_code == 200:
-                    print(f"✅ Imagem baixada: {len(response.content)} bytes")
-                    return response.content
-                else:
-                    print(f"❌ Erro no download: {response.text}")
-            else:
-                # Verifica se é base64 puro (sem header data:image)
-                import base64
-                import re
-                
-                # Remove quebras de linha e espaços
-                clean_content = re.sub(r'\s+', '', image_content)
-                
-                # Verifica se parece ser base64
-                if re.match(r'^[A-Za-z0-9+/]*={0,2}$', clean_content) and len(clean_content) > 100:
-                    print("📎 Tentando decodificar como base64 puro...")
-                    try:
-                        decoded = base64.b64decode(clean_content)
-                        # Verifica se os primeiros bytes parecem ser de imagem
-                        if decoded.startswith(b'\x89PNG') or decoded.startswith(b'\xff\xd8\xff') or decoded.startswith(b'GIF'):
-                            print("✅ Base64 puro decodificado com sucesso")
-                            return decoded
-                    except Exception as decode_error:
-                        print(f"❌ Erro ao decodificar base64: {decode_error}")
-                
-                print(f"❌ Formato de conteúdo não reconhecido: {type(image_content)}")
-                print(f"📝 Primeiros 200 chars: {image_content[:200]}")
-            return None
-        except Exception as e:
-            print(f"❌ Erro ao baixar imagem: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _save_image(self, image_url: str):
-        """Salva a imagem gerada"""
-        try:
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".png",
-                filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All files", "*.*")],
-                title="Salvar Planta Gerada"
+            return call_openrouter_text(
+                model=model,
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=prompt,
+                temperature=0.2,
+                max_tokens=3200
             )
-            if filename:
-                if hasattr(self, '_current_image_data') and self._current_image_data:
-                    with open(filename, 'wb') as f:
-                        f.write(self._current_image_data)
-                    messagebox.showinfo("Sucesso", f"Imagem salva em: {filename}")
-                else:
-                    # Tenta baixar novamente
-                    image_data = self._download_image(image_url)
-                    if image_data:
-                        with open(filename, 'wb') as f:
-                            f.write(image_data)
-                        messagebox.showinfo("Sucesso", f"Imagem salva em: {filename}")
-                    else:
-                        messagebox.showerror("Erro", "Não foi possível baixar a imagem")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao salvar imagem: {e}")
+        except Exception as exc:
+            raise RuntimeError(f"Erro ao solicitar relatório completo: {exc}") from exc
 
-    def _show_prompt_window(self, prompt: str):
-        """Mostra o prompt usado para gerar a imagem"""
-        prompt_window = tk.Toplevel(self)
-        prompt_window.title("📋 Prompt Utilizado")
-        prompt_window.geometry("600x400")
-        prompt_window.transient(self)
-        
-        text_widget = tk.Text(prompt_window, wrap="word", font=("Consolas", 10))
-        scrollbar = ttk.Scrollbar(prompt_window, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        text_widget.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        scrollbar.pack(side="right", fill="y", pady=10)
-        
-        text_widget.insert("1.0", prompt)
-        text_widget.configure(state="disabled")
+    def _build_full_report_payload(self, result: AnalysisResult, model: str) -> Dict:
+        """Agrupa todos os dados disponíveis para envio ao modelo."""
+        payload: Dict[str, Union[str, float, bool, List, Dict]] = {}
+        if isinstance(result.raw_json, dict) and result.raw_json:
+            payload["raw_json"] = result.raw_json
 
-    def _show_plant_result(self, prompt: str, progress_window: tk.Toplevel):
-        """Mostra o resultado da geração da planta"""
-        progress_window.destroy()
-        
-        # Cria janela para mostrar o prompt gerado (por enquanto)
-        result_window = tk.Toplevel(self)
-        result_window.title("Prompt para Geração de Planta")
-        result_window.geometry("800x600")
-        result_window.transient(self)
-        
-        # Frame principal
-        main_frame = ttk.Frame(result_window)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Título
-        ttk.Label(main_frame, text="📐 Prompt para Geração de Planta do Imóvel", 
-                 font=("Arial", 14, "bold")).pack(pady=(0,10))
-        
-        # Texto do prompt
-        text_frame = ttk.Frame(main_frame)
-        text_frame.pack(fill="both", expand=True)
-        
-        text_widget = tk.Text(text_frame, wrap="word", font=("Consolas", 10))
-        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        text_widget.pack(side="left", fill="both", expand=True)
+        payload.update({
+            "arquivo": result.arquivo,
+            "modelo_utilizado": model,
+            "gerado_em": datetime.now().isoformat(),
+            "matricula_principal": result.matricula_principal,
+            "matriculas_confrontantes": result.matriculas_confrontantes,
+            "matriculas_nao_confrontantes": result.matriculas_nao_confrontantes,
+            "lotes_sem_matricula": result.lotes_sem_matricula,
+            "confrontacao_completa": result.confrontacao_completa,
+            "proprietarios_identificados": result.proprietarios_identificados,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+            "estado_ms_inferido": result.is_confrontante,
+        })
+
+        payload["matriculas_encontradas"] = [asdict(mat) for mat in result.matriculas_encontradas]
+        payload["lotes_confrontantes"] = [asdict(conf) for conf in result.lotes_confrontantes]
+        payload["resumo_analise"] = asdict(result.resumo_analise) if result.resumo_analise else {}
+
+        resumo_textual = self.txt_resumo.get("1.0", tk.END).strip()
+        if resumo_textual:
+            payload["resumo_textual"] = resumo_textual
+
+        referencia_usuario = self.matricula_var.get().strip()
+        if referencia_usuario and referencia_usuario != "ex: 12345":
+            ref_value = referencia_usuario
+        else:
+            ref_value = ""
+        payload["entrada_usuario"] = {
+            "matricula_referencia_informada": ref_value,
+            "arquivos_processados": [os.path.basename(path) for path in self.results.keys()]
+        }
+
+        missing_sem_matricula: List[str] = []
+        for conf in result.lotes_confrontantes or []:
+            tipo_key = (conf.tipo or "").lower()
+            if tipo_key in {"lote", "matricula"} and not conf.matricula_anexada:
+                ident = (conf.identificador or "").strip()
+                if ident and ident not in missing_sem_matricula:
+                    missing_sem_matricula.append(ident)
+        for ident in result.lotes_sem_matricula or []:
+            ident = (ident or "").strip()
+            if ident and ident not in missing_sem_matricula:
+                missing_sem_matricula.append(ident)
+        if missing_sem_matricula:
+            payload["confrontantes_sem_matricula"] = missing_sem_matricula
+
+        payload["metricas"] = {
+            "total_matriculas": len(result.matriculas_encontradas or []),
+            "total_confrontantes_relacionados": len(result.lotes_confrontantes or []) or len(result.matriculas_confrontantes or []),
+            "total_nao_confrontantes": len(result.matriculas_nao_confrontantes or []),
+        }
+
+        return payload
+
+    def _show_full_report_window(self, report_text: str, payload_json: str, progress_window: Optional[tk.Toplevel]):
+        """Exibe o relatório completo retornado pela IA."""
+        from_cache = progress_window is None or not progress_window.winfo_exists()
+        if progress_window and progress_window.winfo_exists():
+            progress_window.destroy()
+
+        if not from_cache:
+            self.log("✅ Relatório completo gerado.")
+
+        report_window = tk.Toplevel(self)
+        report_window.title("Relatório Completo da Matrícula")
+        report_window.geometry("920x740")
+        report_window.transient(self)
+
+        ttk.Label(report_window, text="📄 Relatório completo gerado pela IA", font=("Arial", 14, "bold")).pack(pady=(12, 6))
+
+        text_frame = ttk.Frame(report_window)
+        text_frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        txt_report = tk.Text(
+            text_frame,
+            wrap="word",
+            bg="white",
+            relief="flat",
+            padx=16,
+            pady=12
+        )
+        txt_report.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=txt_report.yview)
         scrollbar.pack(side="right", fill="y")
-        
-        text_widget.insert("1.0", prompt)
+        txt_report.configure(yscrollcommand=scrollbar.set)
+
+        content = report_text.strip() or "Relatório vazio retornado pela IA."
+        self._render_markdown_content(txt_report, content)
+
+        button_frame = ttk.Frame(report_window)
+        button_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        ttk.Button(button_frame, text="📋 Copiar relatório", command=lambda: self._copy_to_clipboard(content)).pack(side="left")
+        ttk.Button(button_frame, text="💾 Salvar relatório", command=lambda: self._save_text_to_file(content, title="Salvar Relatório Completo", default_extension=".txt")).pack(side="left", padx=(8, 0))
+        ttk.Button(button_frame, text="🧾 Ver dados enviados", command=lambda: self._show_payload_window("Dados estruturados enviados", payload_json)).pack(side="left", padx=(8, 0))
+        ttk.Button(button_frame, text="💾 Salvar dados estruturados", command=lambda: self._save_text_to_file(payload_json, title="Salvar Dados Estruturados", default_extension=".json")).pack(side="left", padx=(8, 0))
+        ttk.Button(button_frame, text="Fechar", command=report_window.destroy).pack(side="right")
+
+    def _show_full_report_error(self, error: str, progress_window: tk.Toplevel):
+        """Trata falhas na geração do relatório completo."""
+        if progress_window and progress_window.winfo_exists():
+            progress_window.destroy()
+        self.log(f"❌ Erro ao gerar relatório completo: {error}")
+        mensagem = f"Não foi possível gerar o relatório completo:\n{error}"
+        messagebox.showerror("Erro na geração", mensagem)
+        self.cached_full_report_text = None
+        self.cached_full_report_payload = None
+
+    def _show_payload_window(self, title: str, content: str):
+        """Abre janela modal exibindo texto estruturado (JSON)."""
+        payload_window = tk.Toplevel(self)
+        payload_window.title(title)
+        payload_window.geometry("760x520")
+        payload_window.transient(self)
+
+        text_widget = tk.Text(payload_window, wrap="word", font=("Consolas", 10))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", content)
         text_widget.configure(state="disabled")
-        
-        # Botões
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x", pady=(10,0))
-        
-        ttk.Button(button_frame, text="📋 Copiar Prompt", 
-                  command=lambda: self._copy_to_clipboard(prompt)).pack(side="left")
-        
-        ttk.Button(button_frame, text="💾 Salvar como TXT", 
-                  command=lambda: self._save_prompt_to_file(prompt)).pack(side="left", padx=(10,0))
-        
-        ttk.Button(button_frame, text="Fechar", 
-                  command=result_window.destroy).pack(side="right")
-        
-        # Instruções
-        instructions = """
-💡 INSTRUÇÕES:
-1. Copie este prompt e use em APIs de geração de imagem como:
-   • DALL-E 3 (OpenAI)
-   • Midjourney
-   • Stable Diffusion
-   • Leonardo AI
 
-2. Para melhores resultados, adicione:
-   • "architectural drawing"
-   • "technical blueprint"
-   • "professional land survey"
-"""
-        
-        ttk.Label(main_frame, text=instructions, justify="left", 
-                 font=("Arial", 9), foreground="gray").pack(pady=(10,0))
+        button_frame = ttk.Frame(payload_window)
+        button_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(button_frame, text="📋 Copiar", command=lambda: self._copy_to_clipboard(content)).pack(side="left")
+        ttk.Button(button_frame, text="Fechar", command=payload_window.destroy).pack(side="right")
 
-    def _show_plant_error(self, error: str, progress_window: tk.Toplevel):
-        """Mostra erro na geração da planta"""
-        progress_window.destroy()
-        messagebox.showerror("Erro na Geração", f"Erro ao gerar planta: {error}")
+    def _setup_report_text_tags(self, widget: tk.Text):
+        """Configura estilos para renderização rica do relatório."""
+        if getattr(widget, "_report_tags_configured", False):
+            return
+
+        try:
+            tkfont.Font(family="Calibri", size=12)
+            family = "Calibri"
+            size = 12
+        except tk.TclError:
+            base_font = tkfont.nametofont("TkDefaultFont")
+            family = base_font.actual("family")
+            size = base_font.actual("size")
+
+        widget.configure(font=(family, size), spacing3=6)
+        widget.tag_configure("paragraph", spacing3=10)
+        widget.tag_configure("heading1", font=(family, size + 6, "bold"), spacing1=18, spacing3=12)
+        widget.tag_configure("heading2", font=(family, size + 4, "bold"), spacing1=14, spacing3=10)
+        widget.tag_configure("heading3", font=(family, size + 2, "bold"), spacing1=12, spacing3=8)
+        widget.tag_configure("bold", font=(family, size, "bold"))
+        widget.tag_configure("bullet", lmargin1=32, lmargin2=56, spacing3=6)
+        widget.tag_configure("numbered", lmargin1=32, lmargin2=56, spacing3=6)
+        widget.tag_configure("hr", spacing3=10)
+
+        widget._report_tags_configured = True
+
+    def _insert_formatted_text(self, widget: tk.Text, text: str, base_tags: Tuple[str, ...]):
+        """Insere texto aplicando formatação simples de negrito."""
+        remainder = text
+        while True:
+            start = remainder.find("**")
+            if start == -1:
+                if remainder:
+                    widget.insert(tk.END, remainder, base_tags)
+                break
+            if start > 0:
+                widget.insert(tk.END, remainder[:start], base_tags)
+            remainder = remainder[start + 2:]
+            end = remainder.find("**")
+            if end == -1:
+                widget.insert(tk.END, "**" + remainder, base_tags)
+                break
+            bold_segment = remainder[:end]
+            widget.insert(tk.END, bold_segment, base_tags + ("bold",))
+            remainder = remainder[end + 2:]
+
+    def _render_markdown_content(self, widget: tk.Text, markdown_text: str):
+        """Renderiza conteúdo markdown básico com estilo de relatório."""
+        self._setup_report_text_tags(widget)
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+
+        lines = markdown_text.splitlines()
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            stripped = line.strip()
+
+            if not stripped:
+                widget.insert(tk.END, "\n", ("paragraph",))
+                continue
+
+            if stripped.startswith("### "):
+                heading = stripped[4:].strip()
+                self._insert_formatted_text(widget, heading + "\n", ("heading3",))
+                continue
+
+            if stripped.startswith("## "):
+                heading = stripped[3:].strip()
+                self._insert_formatted_text(widget, heading.upper() + "\n", ("heading2",))
+                continue
+
+            if stripped.startswith("# "):
+                heading = stripped[2:].strip()
+                self._insert_formatted_text(widget, heading.upper() + "\n", ("heading1",))
+                continue
+
+            if stripped in {"---", "***"}:
+                widget.insert(tk.END, "\n", ("hr",))
+                continue
+
+            bullet_prefixes = ("- ", "* ", "• ")
+            if stripped.startswith(bullet_prefixes):
+                content = stripped[2:].strip()
+                display = f"• {content}\n"
+                self._insert_formatted_text(widget, display, ("bullet",))
+                continue
+
+            number_split = stripped.split(". ", 1)
+            if len(number_split) == 2 and number_split[0].isdigit():
+                number, content = number_split
+                display = f"{number}. {content.strip()}\n"
+                self._insert_formatted_text(widget, display, ("numbered",))
+                continue
+
+            self._insert_formatted_text(widget, stripped + "\n", ("paragraph",))
+
+        widget.configure(state=tk.DISABLED)
+        widget.see("1.0")
 
     def _copy_to_clipboard(self, text: str):
         """Copia texto para a área de transferência"""
         self.clipboard_clear()
         self.clipboard_append(text)
         self.update()
-        messagebox.showinfo("Copiado", "Prompt copiado para a área de transferência!")
+        messagebox.showinfo("Copiado", "Conteúdo copiado para a área de transferência!")
 
-    def _save_prompt_to_file(self, prompt: str):
-        """Salva o prompt em arquivo de texto"""
+    def _save_text_to_file(self, text: str, title: str = "Salvar arquivo de texto", default_extension: str = ".txt"):
+        """Abre diálogo para salvar conteúdo em arquivo."""
         filename = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            title="Salvar Prompt da Planta"
+            defaultextension=default_extension,
+            filetypes=[("Text files", "*.txt"), ("JSON", "*.json"), ("All files", "*.*")],
+            title=title
         )
         if filename:
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(prompt)
-                messagebox.showinfo("Salvo", f"Prompt salvo em: {filename}")
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao salvar arquivo: {e}")
+                    f.write(text)
+                messagebox.showinfo("Salvo", f"Arquivo salvo em: {filename}")
+            except Exception as exc:
+                messagebox.showerror("Erro ao salvar", f"Não foi possível salvar o arquivo: {exc}")
 
     def log(self, msg: str):
         self.txt_log.insert("end", msg + "\n")
