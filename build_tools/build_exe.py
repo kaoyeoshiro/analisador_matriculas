@@ -43,7 +43,7 @@ def create_exe():
         '--collect-all=PIL',  # Coleta todos os arquivos do Pillow
         '--exclude-module=_tkinter',  # Exclui módulo problemático
         '--debug=all',  # Debug para ver problemas
-        'main.py'
+        '../main.py'
     ]
     
     try:

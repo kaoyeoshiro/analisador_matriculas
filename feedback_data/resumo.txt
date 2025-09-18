@@ -1,0 +1,36 @@
+RELATORIO DE FEEDBACK - SISTEMA DE MATRICULAS CONFRONTANTES
+=========================================================
+
+Gerado em: 2025-09-18 10:03:34
+
+ESTATISTICAS:
+- Total de feedbacks: 2
+- Erros reportados: 1
+- Sucessos automaticos: 1
+- Taxa de erro: 50.0%
+
+ULTIMOS FEEDBACKS:
+
+[2025-09-18 10:03:34] ERRO
+Processo: 12345.6789.10
+Modelo: google/gemini-2.5-pro
+Descricao: Erro na analise de matricula 12345.6789.10 - Confrontantes nao identificados...
+
+[2025-09-18 10:03:34] SUCESSO_AUTO
+Processo: 98765.4321.00
+Modelo: google/gemini-2.5-pro
+Descricao: Analise bem-sucedida - Todos os confrontantes identificados...
+
+
+ARQUIVOS GERADOS:
+- Dados completos: feedback_completo.json
+- Planilha para analise: feedback_relatorio.csv
+- Este resumo: resumo.txt
+
+COMO USAR:
+1. Abra o arquivo CSV no Excel para analise detalhada
+2. O arquivo JSON contem todos os dados estruturados
+3. Este resumo fornece uma visao geral rapida
+
+NOTA: O Google Forms apresentou erro 400, por isso todos
+os feedbacks estao sendo salvos localmente.

@@ -96,15 +96,98 @@ class AutoUpdater:
 
     def _read_version_file(self) -> str:
         """Lê a versão do arquivo VERSION"""
-        version_file = os.path.join(self.app_dir, "VERSION")
-        try:
-            if os.path.exists(version_file):
-                with open(version_file, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
-        except Exception as e:
-            if not self.silent:
-                print(f"[AutoUpdater] Erro ao ler VERSION: {e}")
+        # Tenta encontrar o arquivo VERSION em vários locais
+        possible_locations = [
+            os.path.join(self.app_dir, "VERSION"),
+            os.path.join(self.app_dir, "version"),
+            os.path.join(os.getcwd(), "VERSION"),
+            os.path.join(os.getcwd(), "version"),
+            os.path.join(os.path.dirname(__file__), "VERSION"),
+            os.path.join(os.path.dirname(__file__), "version")
+        ]
+
+        for version_file in possible_locations:
+            try:
+                if os.path.exists(version_file):
+                    with open(version_file, 'r', encoding='utf-8') as f:
+                        version_content = f.read().strip()
+                        if version_content:
+                            if not self.silent:
+                                print(f"[AutoUpdater] Versão lida de: {version_file}")
+                            return version_content
+            except Exception as e:
+                if not self.silent:
+                    print(f"[AutoUpdater] Erro ao ler {version_file}: {e}")
+                continue
+
+        if not self.silent:
+            print(f"[AutoUpdater] Arquivo VERSION não encontrado, usando versão padrão")
         return "1.0.0"
+
+    def _update_version_files(self, new_version: str):
+        """Atualiza todos os arquivos de versão encontrados"""
+        # Locais onde atualizar o arquivo VERSION
+        version_locations = [
+            os.path.join(self.app_dir, "VERSION"),
+            os.path.join(self.app_dir, "version"),
+            os.path.join(os.getcwd(), "VERSION"),
+            os.path.join(os.getcwd(), "version"),
+            os.path.join(os.path.dirname(__file__), "VERSION"),
+            os.path.join(os.path.dirname(__file__), "version")
+        ]
+
+        updated_files = []
+        for version_file in version_locations:
+            try:
+                # Se o arquivo já existe ou está no diretório do app, atualiza
+                if os.path.exists(version_file) or os.path.dirname(version_file) == self.app_dir:
+                    with open(version_file, 'w', encoding='utf-8') as f:
+                        f.write(new_version)
+                    updated_files.append(version_file)
+                    if not self.silent:
+                        print(f"[AutoUpdater] Arquivo VERSION atualizado: {version_file}")
+            except Exception as e:
+                if not self.silent:
+                    print(f"[AutoUpdater] Erro ao atualizar {version_file}: {e}")
+
+        return updated_files
+
+    def sync_version_with_github(self) -> bool:
+        """Sincroniza a versão local com a versão do GitHub (sem baixar executável)"""
+        try:
+            # Verifica a versão mais recente no GitHub
+            url = f"{self.api_base}/releases/latest"
+            headers = {'Accept': 'application/vnd.github.v3+json'}
+
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            release_data = response.json()
+            latest_version = release_data['tag_name'].lstrip('v')
+
+            self._log(f"Versão no GitHub: {latest_version}")
+            self._log(f"Versão local: {self.current_version}")
+
+            # Se a versão local está desatualizada, atualiza os arquivos VERSION
+            if version.parse(latest_version) > version.parse(self.current_version):
+                self._log("Versão local desatualizada. Atualizando arquivos VERSION...")
+                updated_files = self._update_version_files(latest_version)
+
+                if updated_files:
+                    self._log(f"Arquivos VERSION atualizados: {updated_files}")
+                    # Atualiza a versão atual em memória
+                    self.current_version = latest_version
+                    return True
+                else:
+                    self._log("Nenhum arquivo VERSION foi atualizado")
+                    return False
+            else:
+                self._log("Versão local já está atualizada")
+                return False
+
+        except Exception as e:
+            self._log(f"Erro ao sincronizar versão: {e}")
+            return False
 
     def _log(self, message: str):
         """Log interno respeitando o modo silent"""
@@ -325,8 +408,16 @@ Start-Sleep -Seconds 2
 
 $downloadedFile = {downloaded_safe}
 $currentExe = {current_safe}
-$versionFile = {version_safe}
+$appDir = '{self.app_dir}'
 $newVersion = "{update_info['version']}"
+
+# Lista de arquivos VERSION para atualizar
+$versionFiles = @(
+    (Join-Path $appDir "VERSION"),
+    (Join-Path $appDir "version"),
+    (Join-Path (Get-Location) "VERSION"),
+    (Join-Path (Get-Location) "version")
+)
 
 Write-Host "Verificando arquivos..."
 Write-Host "Arquivo baixado: $downloadedFile"
@@ -363,8 +454,17 @@ try {{
     Write-Host "Aplicando nova versao..."
     Copy-Item -LiteralPath $downloadedFile -Destination $currentExe -Force
 
-    Write-Host "Atualizando arquivo de versao..."
-    $newVersion | Out-File -LiteralPath $versionFile -Encoding UTF8 -NoNewline
+    Write-Host "Atualizando arquivos de versao..."
+    foreach ($versionFile in $versionFiles) {{
+        try {{
+            if ((Test-Path -LiteralPath $versionFile) -or ($versionFile -like "*$appDir*")) {{
+                $newVersion | Out-File -LiteralPath $versionFile -Encoding UTF8 -NoNewline
+                Write-Host "  ✓ Atualizado: $versionFile"
+            }}
+        }} catch {{
+            Write-Host "  ❌ Erro ao atualizar: $versionFile - $($_.Exception.Message)"
+        }}
+    }}
 
     Write-Host "Limpando arquivos temporarios..."
     Remove-Item -LiteralPath $downloadedFile -Force -ErrorAction SilentlyContinue
@@ -529,8 +629,33 @@ if !COPY_SUCCESS! equ 0 (
     exit /b 1
 )
 
-echo Atualizando arquivo de versao...
-echo {update_info['version']} > "{version_file_short}"
+echo Atualizando arquivos de versao...
+REM Atualiza VERSION no diretorio do app
+if exist "{os.path.join(self.app_dir, 'VERSION')}" (
+    echo {update_info['version']} > "{os.path.join(self.app_dir, 'VERSION')}"
+    echo   ✓ Atualizado: {os.path.join(self.app_dir, 'VERSION')}
+) else (
+    echo {update_info['version']} > "{os.path.join(self.app_dir, 'VERSION')}"
+    echo   ✓ Criado: {os.path.join(self.app_dir, 'VERSION')}
+)
+
+REM Atualiza version no diretorio do app (minuscula)
+if exist "{os.path.join(self.app_dir, 'version')}" (
+    echo {update_info['version']} > "{os.path.join(self.app_dir, 'version')}"
+    echo   ✓ Atualizado: {os.path.join(self.app_dir, 'version')}
+)
+
+REM Atualiza VERSION no diretorio atual
+if exist "{os.path.join(os.getcwd(), 'VERSION')}" (
+    echo {update_info['version']} > "{os.path.join(os.getcwd(), 'VERSION')}"
+    echo   ✓ Atualizado: {os.path.join(os.getcwd(), 'VERSION')}
+)
+
+REM Atualiza version no diretorio atual (minuscula)
+if exist "{os.path.join(os.getcwd(), 'version')}" (
+    echo {update_info['version']} > "{os.path.join(os.getcwd(), 'version')}"
+    echo   ✓ Atualizado: {os.path.join(os.getcwd(), 'version')}
+)
 
 echo Limpando arquivos temporarios...
 del "%DOWNLOAD_FILE%" > nul 2>&1

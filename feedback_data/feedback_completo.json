@@ -1,0 +1,26 @@
+{
+  "feedbacks": [
+    {
+      "id": 1,
+      "tipo": "ERRO",
+      "descricao": "Erro na analise de matricula 12345.6789.10 - Confrontantes nao identificados",
+      "processo": "12345.6789.10",
+      "modelo": "google/gemini-2.5-pro",
+      "timestamp": "2025-09-18 10:03:34",
+      "versao": "1.0.0"
+    },
+    {
+      "id": 2,
+      "tipo": "SUCESSO_AUTO",
+      "descricao": "Analise bem-sucedida - Todos os confrontantes identificados",
+      "processo": "98765.4321.00",
+      "modelo": "google/gemini-2.5-pro",
+      "timestamp": "2025-09-18 10:03:34",
+      "versao": "1.0.0"
+    }
+  ],
+  "metadados": {
+    "criado_em": "2025-09-18T10:03:34.557219",
+    "total": 2
+  }
+}

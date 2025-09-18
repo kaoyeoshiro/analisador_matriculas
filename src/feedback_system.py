@@ -6,9 +6,6 @@ Coleta dados de uso de forma não intrusiva, diferenciando entre:
 - Sucessos implícitos (uso normal sem reclamações)
 """
 
-import os
-import json
-import time
 import threading
 import requests
 from datetime import datetime
@@ -33,18 +30,17 @@ class FeedbackSystem:
         self._processo_atual: Optional[str] = None
         self._relatorio_gerado_com_sucesso = False
 
-        # Configuração do Google Forms via ambiente
-        self.google_form_url = os.getenv('GOOGLE_FORM_URL', '')
+        # Configuração do Google Forms - IDs CORRETOS HARDCODED
+        self.google_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/formResponse"
+        self.view_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/viewform"
+        # IDs reais obtidos a partir do bloco FB_PUBLIC_LOAD_DATA_ do formulário
         self.form_fields = {
-            'tipo': os.getenv('GOOGLE_FORM_FIELD_TIPO', 'entry.1234567890'),
-            'descricao': os.getenv('GOOGLE_FORM_FIELD_DESCRICAO', 'entry.0987654321'),
-            'modelo': os.getenv('GOOGLE_FORM_FIELD_MODELO', 'entry.5566778899'),
-            'timestamp': os.getenv('GOOGLE_FORM_FIELD_TIMESTAMP', 'entry.9988776655'),
-            'versao': os.getenv('GOOGLE_FORM_FIELD_VERSAO', 'entry.1357924680'),
+            'tipo': 'entry.1649732056',
+            'descricao': 'entry.579089408',
+            'modelo': 'entry.597505189',
+            'timestamp': 'entry.207190791',
+            'versao': 'entry.943393649',
         }
-
-        # Arquivo de feedback local (backup/debug)
-        self.feedback_file = os.path.join(os.path.dirname(__file__), 'dist', 'feedback_pendente.json')
 
         # Referência para o botão de feedback (será definida externamente)
         self.btn_feedback: Optional[tk.Button] = None
@@ -181,9 +177,13 @@ class FeedbackSystem:
             not self._feedback_enviado):
 
             print("[Feedback] Enviando feedback positivo automático (fechamento)")
-            self._enviar_feedback_automatico(
-                "SUCESSO_AUTO",
-                f"Relatório do processo {self._processo_atual} gerado sem problemas reportados - sistema fechado"
+            self._enviar_feedback(
+                tipo="SUCESSO_AUTO",
+                descricao=(
+                    f"Relatório do processo {self._processo_atual} "
+                    "gerado sem problemas reportados - sistema fechado"
+                ),
+                processo=self._processo_atual
             )
 
     def _enviar_feedback_automatico(self, tipo: str, descricao: str):
@@ -232,58 +232,15 @@ class FeedbackSystem:
 
             print(f"[Feedback] Enviando: {feedback_data}")
 
-            # Salva localmente primeiro (backup)
-            self._salvar_feedback_local(feedback_data)
-
-            # Envia para Google Forms se configurado
-            if self.google_form_url and self.google_form_url.strip():
-                return self._enviar_para_google_forms(feedback_data)
-            else:
-                print("[Feedback] Google Forms não configurado, salvando apenas localmente")
-                return True
+            return self._enviar_para_google_forms(feedback_data)
 
         except Exception as e:
             print(f"[Feedback] Erro ao enviar feedback: {e}")
             return False
 
-    def _salvar_feedback_local(self, feedback_data: Dict[str, Any]):
-        """
-        Salva feedback localmente como backup
-
-        Args:
-            feedback_data: Dados do feedback
-        """
-        try:
-            # Garante que o diretório existe
-            os.makedirs(os.path.dirname(self.feedback_file), exist_ok=True)
-
-            # Lê feedbacks existentes
-            feedbacks = []
-            if os.path.exists(self.feedback_file):
-                try:
-                    with open(self.feedback_file, 'r', encoding='utf-8') as f:
-                        feedbacks = json.load(f)
-                except:
-                    feedbacks = []
-
-            # Adiciona novo feedback
-            feedbacks.append(feedback_data)
-
-            # Mantém apenas os últimos 100 feedbacks
-            feedbacks = feedbacks[-100:]
-
-            # Salva de volta
-            with open(self.feedback_file, 'w', encoding='utf-8') as f:
-                json.dump(feedbacks, f, indent=2, ensure_ascii=False)
-
-            print(f"[Feedback] Salvo localmente: {self.feedback_file}")
-
-        except Exception as e:
-            print(f"[Feedback] Erro ao salvar localmente: {e}")
-
     def _enviar_para_google_forms(self, feedback_data: Dict[str, Any]) -> bool:
         """
-        Envia feedback para Google Forms
+        Envia feedback para Google Forms - VERSÃO FUNCIONAL COM SENTINEL
 
         Args:
             feedback_data: Dados do feedback
@@ -292,8 +249,20 @@ class FeedbackSystem:
             True se enviado com sucesso, False caso contrário
         """
         try:
-            # Prepara dados para o formulário
+            # Headers completos como navegador real
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Origin': 'https://docs.google.com',
+                'Referer': self.view_form_url,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Connection': 'keep-alive'
+            }
+
+            # Prepara dados com campo sentinel (método que funciona)
             form_data = {
+                f"{self.form_fields['tipo']}_sentinel": "",  # Campo sentinel obrigatório
                 self.form_fields['tipo']: feedback_data['tipo'],
                 self.form_fields['descricao']: feedback_data['descricao'],
                 self.form_fields['modelo']: feedback_data['modelo'],
@@ -301,63 +270,53 @@ class FeedbackSystem:
                 self.form_fields['versao']: feedback_data['versao']
             }
 
+            print(f"[Feedback] Enviando para Google Forms...")
+            print(f"[Feedback] Dados: {form_data}")
+
             # Envia POST para Google Forms
             response = requests.post(
                 self.google_form_url,
                 data=form_data,
-                timeout=10,
-                headers={
-                    'User-Agent': 'FeedbackSystem/1.0',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
+                headers=headers,
+                timeout=30,
+                allow_redirects=True
             )
 
-            # Google Forms retorna 200 mesmo com sucesso (redirect)
-            if response.status_code in [200, 302]:
-                print(f"[Feedback] Enviado para Google Forms com sucesso")
+            print(f"[Feedback] Status: {response.status_code}")
+            print(f"[Feedback] URL final: {response.url}")
+
+            # Google Forms retorna 200 com sucesso
+            if response.status_code == 200:
+                print(f"[Feedback] SUCESSO: Enviado para Google Forms!")
                 return True
             else:
-                print(f"[Feedback] Erro no Google Forms: {response.status_code}")
+                print(f"[Feedback] ERRO: Google Forms retornou {response.status_code}")
+                print(f"[Feedback] Preview: {response.text[:200]}")
                 return False
 
         except requests.exceptions.Timeout:
-            print("[Feedback] Timeout ao enviar para Google Forms")
+            print("[Feedback] TIMEOUT: Google Forms nao respondeu")
             return False
         except requests.exceptions.RequestException as e:
-            print(f"[Feedback] Erro de rede: {e}")
+            print(f"[Feedback] ERRO DE REDE: {e}")
             return False
         except Exception as e:
             print(f"[Feedback] Erro inesperado: {e}")
             return False
 
-    def get_estatisticas_locais(self) -> Dict[str, Any]:
+    def enviar_feedback_teste(self, tipo: str, descricao: str, processo: str = "TESTE") -> bool:
         """
-        Retorna estatísticas dos feedbacks salvos localmente
+        Método público para testar envio de feedback
+
+        Args:
+            tipo: "ERRO" ou "SUCESSO_AUTO"
+            descricao: Descrição do feedback
+            processo: Número do processo (padrão: "TESTE")
 
         Returns:
-            Dicionário com estatísticas
+            True se enviado com sucesso
         """
-        try:
-            if not os.path.exists(self.feedback_file):
-                return {"total": 0, "erros": 0, "sucessos": 0}
-
-            with open(self.feedback_file, 'r', encoding='utf-8') as f:
-                feedbacks = json.load(f)
-
-            total = len(feedbacks)
-            erros = sum(1 for f in feedbacks if f.get('tipo') == 'ERRO')
-            sucessos = sum(1 for f in feedbacks if f.get('tipo') == 'SUCESSO_AUTO')
-
-            return {
-                "total": total,
-                "erros": erros,
-                "sucessos": sucessos,
-                "taxa_sucesso": (sucessos / total * 100) if total > 0 else 0
-            }
-
-        except Exception as e:
-            print(f"[Feedback] Erro ao calcular estatísticas: {e}")
-            return {"total": 0, "erros": 0, "sucessos": 0, "erro": str(e)}
+        return self._enviar_feedback(tipo, descricao, processo)
 
 
 # Função de conveniência para criar instância global

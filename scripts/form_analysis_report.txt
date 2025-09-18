@@ -1,0 +1,27 @@
+RELATÓRIO DE ANÁLISE DO GOOGLE FORMS
+============================================================
+
+URL do Formulário: https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/viewform
+Data da Análise: 2025-09-18 09:37:00.405247
+
+TODOS OS ENTRY IDs ENCONTRADOS:
+----------------------------------------
+- entry.1649732056
+
+ANÁLISE DETALHADA DOS CAMPOS:
+----------------------------------------
+Entry ID: entry.1649732056
+Tipo: radio
+Label: Pergunta obrigatória
+Context: iv class="M4DNQ"><div id="i1" class="HoXoMd D1wxyf RjsPE" role="heading" aria-level="3" aria-describedby="i5"><span class="M7eMe"><div><div>Tipo de Feedback</div></div></span><span class="vnumgf" id="...
+--------------------
+
+MAPEAMENTO SUGERIDO:
+----------------------------------------
+TIPO -> entry.1649732056
+
+NOVA CONFIGURAÇÃO .env:
+----------------------------------------
+# Configurações Google Forms - IDs CORRIGIDOS
+GOOGLE_FORM_URL=https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/formResponse
+GOOGLE_FORM_FIELD_TIPO=entry.1649732056

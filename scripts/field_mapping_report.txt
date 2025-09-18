@@ -1,0 +1,89 @@
+RELATÓRIO DETALHADO - MAPEAMENTO DE CAMPOS
+============================================================
+
+Data: 2025-09-18 09:39:53.423647
+URL: https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/viewform
+
+IDs ENCONTRADOS NO CONSOLE:
+1. entry.579089408
+2. entry.597505189
+3. entry.207190791
+4. entry.943393649
+5. entry.1649732056
+
+RESULTADOS DOS TESTES INDIVIDUAIS:
+----------------------------------------
+ID: entry.579089408
+Status: 400
+Sucesso: False
+--------------------
+ID: entry.597505189
+Status: 400
+Sucesso: False
+--------------------
+ID: entry.207190791
+Status: 400
+Sucesso: False
+--------------------
+ID: entry.943393649
+Status: 400
+Sucesso: False
+--------------------
+ID: entry.1649732056
+Status: 400
+Sucesso: False
+--------------------
+
+RESULTADOS DOS TESTES DE COMBINAÇÃO:
+----------------------------------------
+Teste: TIPO_primeiro
+Sucesso: False
+Dados enviados:
+  entry.579089408: ERRO
+--------------------
+Teste: TIPO_ultimo
+Sucesso: False
+Dados enviados:
+  entry.1649732056: ERRO
+--------------------
+Teste: combinacao_basica
+Sucesso: False
+Dados enviados:
+  entry.579089408: ERRO
+  entry.597505189: Teste de descrição
+  entry.207190791: google/gemini-2.5-pro
+--------------------
+Teste: com_sentinel
+Sucesso: False
+Dados enviados:
+  entry.579089408_sentinel: 
+  entry.579089408: ERRO
+  entry.597505189: Teste com sentinel
+--------------------
+Teste: todos_campos
+Sucesso: False
+Dados enviados:
+  entry.579089408: ERRO
+  entry.597505189: Descrição do problema
+  entry.207190791: google/gemini-2.5-pro
+  entry.943393649: 2025-09-18 09:39:49
+  entry.1649732056: 1.0.0
+--------------------
+
+MAPEAMENTO FINAL:
+----------------------------------------
+TIPO -> entry.579089408
+DESCRICAO -> entry.597505189
+MODELO -> entry.207190791
+TIMESTAMP -> entry.943393649
+VERSAO -> entry.1649732056
+
+CONFIGURAÇÃO .env:
+----------------------------------------
+# Configurações Google Forms - IDs CORRIGIDOS VIA CONSOLE
+GOOGLE_FORM_URL=https://docs.google.com/forms/d/e/1FAIpQLSdxpVRV22Adm2bXkoH3jyjyuN32GQVKxX9ebpzkRHV9vN3J4g/formResponse
+GOOGLE_FORM_FIELD_TIPO=entry.579089408
+GOOGLE_FORM_FIELD_DESCRICAO=entry.597505189
+GOOGLE_FORM_FIELD_MODELO=entry.207190791
+GOOGLE_FORM_FIELD_TIMESTAMP=entry.943393649
+GOOGLE_FORM_FIELD_VERSAO=entry.1649732056
