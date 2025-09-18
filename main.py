@@ -101,25 +101,6 @@ class RestricaoInfo:
     data_baixa: Optional[str] = None
     observacoes: Optional[str] = None
 
-@dataclass
-class DadosGeometricos:
-    """Dados geométricos extraídos para geração de planta"""
-    medidas: Dict[str, float] = None  # frente, fundos, lateral_direita, lateral_esquerda
-    confrontantes: Dict[str, str] = None  # direção -> nome do confrontante
-    area_total: Optional[float] = None
-    angulos: Dict[str, float] = None  # direção -> ângulo em graus
-    formato: str = "retangular"  # retangular, irregular, triangular, etc.
-    observacoes: List[str] = None
-    
-    def __post_init__(self):
-        if self.medidas is None:
-            self.medidas = {}
-        if self.confrontantes is None:
-            self.confrontantes = {}
-        if self.angulos is None:
-            self.angulos = {}
-        if self.observacoes is None:
-            self.observacoes = []
 
 @dataclass
 class MatriculaInfo:
@@ -132,15 +113,12 @@ class MatriculaInfo:
     quadra: Optional[str] = None  # número da quadra
     cadeia_dominial: List[TransmissaoInfo] = None  # histórico de transmissões
     restricoes: List[RestricaoInfo] = None  # restrições e gravames
-    dados_geometricos: Optional[DadosGeometricos] = None  # dados para planta
     
     def __post_init__(self):
         if self.cadeia_dominial is None:
             self.cadeia_dominial = []
         if self.restricoes is None:
             self.restricoes = []
-        if self.dados_geometricos is None:
-            self.dados_geometricos = None
 
 @dataclass
 class LoteConfronta:
@@ -561,10 +539,11 @@ UNIFIED_SYSTEM_PROMPT = (
     "• Determine qual é a matrícula principal (objeto do usucapião)\n\n"
 
     "2️⃣ ANÁLISE EXTREMAMENTE RIGOROSA DE CONFRONTANTES:\n"
-    "📍 ONDE PROCURAR:\n"
-    "• Seção 'DESCRIÇÃO DO IMÓVEL' da matrícula principal\n"
-    "• Seções 'CONFRONTAÇÕES', 'LIMITES', 'DIVISAS'\n"
-    "• Tabelas, averbações, registros complementares\n\n"
+    "📍 ONDE PROCURAR CONFRONTANTES:\n"
+    "• EXCLUSIVAMENTE na DESCRIÇÃO DA MATRÍCULA PRINCIPAL\n"
+    "• Seções 'CONFRONTAÇÕES', 'LIMITES', 'DIVISAS' da matrícula principal\n"
+    "• NÃO buscar confrontantes em outros documentos ou matrículas anexadas\n"
+    "• FOCO TOTAL: apenas a descrição do imóvel da matrícula objeto do usucapião\n\n"
 
     "🔍 PALAVRAS-CHAVE OBRIGATÓRIAS:\n"
     "• 'confronta', 'limita', 'divisa', 'ao norte/sul/leste/oeste'\n"
@@ -573,12 +552,16 @@ UNIFIED_SYSTEM_PROMPT = (
     "🎯 TIPOS DE CONFRONTANTES:\n"
     "• LOTES: 'lote 11', 'lote nº 09' • MATRÍCULAS: 'matrícula 1.234'\n"
     "• PESSOAS: nomes completos • EMPRESAS: razões sociais\n"
-    "• VIAS PÚBLICAS: ruas, avenidas • ENTES PÚBLICOS: Estado, Município\n"
-    "• ACIDENTES GEOGRÁFICOS: rios, córregos\n\n"
+    "• VIAS PÚBLICAS: ruas, avenidas (PROPRIEDADE DO MUNICÍPIO)\n"
+    "• RODOVIAS ESTADUAIS: apenas estas são de PROPRIEDADE DO ESTADO\n"
+    "• ENTES PÚBLICOS: Estado, Município • ACIDENTES GEOGRÁFICOS: rios, córregos\n\n"
 
     "⚡ REGRAS CRÍTICAS:\n"
     "• LEIA PALAVRA POR PALAVRA da descrição do imóvel principal\n"
+    "• CONFRONTANTES: buscar SOMENTE na matrícula principal, NÃO em outras matrículas\n"
     "• TODO lote tem 4 lados = mínimo 4 confrontantes\n"
+    "• QUANDO MATRÍCULA NÃO ANEXADA: indique 'Matrícula não anexada' no campo matrícula\n"
+    "• EXPRESSE CLARAMENTE quando confrontantes não têm matrícula anexada\n"
     "• Se menos de 4: RELEIA procurando mais\n"
     "• NÃO suponha, EXTRAIA exatamente como escrito\n\n"
 
@@ -593,10 +576,6 @@ UNIFIED_SYSTEM_PROMPT = (
     "• Verifique status: procure 'BAIXA', 'CANCELAMENTO', 'EXTINÇÃO'\n"
     "• ATENÇÃO ESPECIAL: direitos do Estado de Mato Grosso do Sul\n\n"
 
-    "5️⃣ DADOS GEOMÉTRICOS:\n"
-    "• Extraia medidas: frente, fundos, laterais (em metros)\n"
-    "• Relacione direção com confrontante\n"
-    "• Identifique área total, ângulos, formato do terreno\n\n"
 
     "🚨 VERIFICAÇÕES OBRIGATÓRIAS:\n"
     "• Estado de MS como confrontante ou com direitos registrados?\n"
@@ -663,29 +642,6 @@ Responda em JSON com este esquema:
           "observacoes": "hipoteca para financiamento imobiliário"
         }
       ],
-      "dados_geometricos": {
-        "medidas": {
-          "frente": 14.0,
-          "fundos": 14.0,
-          "lateral_direita": 30.69,
-          "lateral_esquerda": 30.69
-        },
-        "confrontantes": {
-          "frente": "Rua Alberto Albertini",
-          "fundos": "Corredor Público",
-          "lateral_direita": "lote 05",
-          "lateral_esquerda": "lote 03"
-        },
-        "area_total": 429.66,
-        "angulos": {
-          "frente": 90.0,
-          "lateral_direita": 90.0,
-          "fundos": 90.0,
-          "lateral_esquerda": 90.0
-        },
-        "formato": "retangular",
-        "observacoes": ["terreno plano", "esquina"]
-      }
     }
   ],
   "matricula_principal": "12345",
@@ -696,10 +652,28 @@ Responda em JSON com este esquema:
       "tipo": "lote",
       "matricula_anexada": "12346",
       "direcao": "norte"
+    },
+    {
+      "identificador": "lote 09",
+      "tipo": "lote",
+      "matricula_anexada": null,
+      "direcao": "sul"
+    },
+    {
+      "identificador": "Rua das Flores",
+      "tipo": "via_publica",
+      "matricula_anexada": null,
+      "direcao": "leste"
+    },
+    {
+      "identificador": "BR-163",
+      "tipo": "rodovia_estadual",
+      "matricula_anexada": null,
+      "direcao": "oeste"
     }
   ],
   "matriculas_nao_confrontantes": ["12348"],
-  "lotes_sem_matricula": ["lote 12", "lote 15"],
+  "lotes_sem_matricula": ["lote 09"],
   "confrontacao_completa": true|false|null,
   "proprietarios_identificados": {"12345": ["Nome"], "12346": ["Nome2"]},
   "resumo_analise": {
@@ -771,25 +745,42 @@ def build_full_report_prompt(data_json: str) -> str:
     """Monta prompt para solicitar um relatório textual completo à LLM."""
     template = textwrap.dedent(
         f"""
-        Você é um assessor jurídico especializado em usucapião. Elabore um relatório técnico completo, direto e fundamentado, utilizando exclusivamente o quadro de informações estruturadas apresentado a seguir.
+<context_gathering>
+        Você é um assessor jurídico especializado em usucapião, auxiliando o Procurador do Estado de Mato Grosso do Sul em processo judicial no qual o Estado foi citado. 
+        Sua tarefa é redigir um **relatório técnico completo, objetivo e fundamentado**, analisando exclusivamente o quadro de informações estruturadas fornecido.
 
-        QUADRO DE INFORMAÇÕES ESTRUTURADAS:
-        <<INÍCIO DOS DADOS>>
-        {data_json}
+        O relatório deve avaliar se o Estado de Mato Grosso do Sul possui interesse jurídico no feito, considerando cadeia dominial, confrontações, restrições e direitos incidentes.
+        </context_gathering>
+
+        <structured_output>
+        Título inicial: **RELATÓRIO COMPLETO DO IMÓVEL**
+
+        Ordem obrigatória das seções:
+        1. **CONTEXTO** – síntese da matrícula principal, localização (quadra, lote), proprietários atuais e anteriores, cadeia dominial e informações gerais.  
+        2. **CONFRONTAÇÕES** – análise detalhada dos confrontantes, indicando quais possuem matrícula identificada, quais não possuem e as implicações jurídicas.  
+        3. **DIREITOS E RESTRIÇÕES** – descrição minuciosa de ônus, hipotecas, penhoras, direitos do Estado ou de terceiros e respectivos status (vigente, baixado etc.).  
+        4. **ANÁLISE CRÍTICA** – avaliação fundamentada sobre consistência, suficiência e eventuais conflitos de informação.  
+        5. **LACUNAS IDENTIFICADAS** – listar dados ausentes ou insuficientes (ex.: confrontantes sem matrícula, cadeias dominiais incompletas, restrições não detalhadas).  
+        6. **RECOMENDAÇÕES** – indicar medidas necessárias (ex.: diligências cartorárias, notificações a terceiros, pesquisa complementar).  
+        7. **PARECER FINAL** – concluir de forma direta se, diante dos elementos apresentados, há ou não interesse jurídico do Estado de Mato Grosso do Sul no processo de usucapião, mencionando explicitamente as matrículas, lotes e restrições relevantes.
+
+        </structured_output>
+
+        <rules>
+        - Responder **sempre em português do Brasil**.  
+        - Não utilizar saudações, frases introdutórias genéricas nem termos técnicos de informática (como "JSON").  
+        - Quando houver ausência de informação, escrever: “Não informado no quadro” e explicar a relevância jurídica da lacuna.  
+        - Converter expressões booleanas ou técnicas (true/false/null) para linguagem jurídica: “Sim”, “Não” ou “Não informado”.  
+        - Citar números de matrículas, lotes, proprietários e confrontantes sempre que presentes.  
+        - Nunca inventar ou presumir dados não constantes no quadro.  
+        </rules>
+
+        <dados>
+        QUADRO DE INFORMAÇÕES ESTRUTURADAS:  
+        <<INÍCIO DOS DADOS>>  
+        {data_json}  
         <<FIM DOS DADOS>>
-
-        Diretrizes obrigatórias:
-        • Responda em português do Brasil.
-        • NÃO escreva saudações, frases introdutórias genéricas ou promessas. Comece diretamente com o título: **RELATÓRIO COMPLETO DO IMÓVEL**.
-        • Use subseções claras nesta ordem: CONTEXTO, CONFRONTAÇÕES, DIREITOS E RESTRIÇÕES, ANÁLISE CRÍTICA, LACUNAS IDENTIFICADAS, RECOMENDAÇÕES, PARECER FINAL.
-        • Em cada seção, cite explicitamente os dados do quadro (matrículas, lotes, quadras, proprietários, confrontantes, restrições, cadeia dominial, métricas numéricas etc.).
-        • Se algum dado estiver ausente, escreva “Não informado no quadro” e explique o impacto dessa ausência.
-        • Se houver confrontantes sem matrícula anexada, destaque que não é possível confirmar direitos do Estado ou de terceiros para esses casos.
-        • O parecer final deve concluir sobre a suficiência das informações para o usucapião e sugerir próximos passos.
-        • Converta valores booleanos ou termos técnicos como "true", "false" ou "null" para expressões jurídicas (por exemplo, “Sim”, “Não” ou “Não informado”), sem citar essas palavras.
-        • Não utilize a palavra “JSON” nem termos de programação. O texto deve soar como relatório elaborado por assessor jurídico.
-        • Nunca invente ou presuma informações que não estejam no quadro de dados; não repita texto vazio.
-        • Traga sempre os nomes e números dos confrontantes mencionados; quando inexistentes, aponte explicitamente a lacuna.
+        </dados>
     """
     )
     return template.strip()
@@ -861,21 +852,6 @@ def _safe_process_matricula_data(m_data):
                 )
                 restricoes_obj.append(restricao)
         
-        # Processa dados geométricos com validação robusta
-        dados_geom_data = _safe_get_dict(m_data, "dados_geometricos")
-        medidas = _safe_get_dict(dados_geom_data, "medidas")
-        confrontantes_geom = _safe_get_dict(dados_geom_data, "confrontantes")
-        angulos = _safe_get_dict(dados_geom_data, "angulos")
-        observacoes_geom = _safe_get_list(dados_geom_data, "observacoes")
-        
-        dados_geometricos = DadosGeometricos(
-            medidas=medidas,
-            confrontantes=confrontantes_geom,
-            area_total=dados_geom_data.get("area_total"),
-            angulos=angulos,
-            formato=dados_geom_data.get("formato", "retangular"),
-            observacoes=observacoes_geom
-        )
         
         # Processa listas principais com validação
         proprietarios = _safe_get_list(m_data, "proprietarios")
@@ -892,7 +868,6 @@ def _safe_process_matricula_data(m_data):
             quadra=m_data.get("quadra"),
             cadeia_dominial=cadeia_dominial_obj,
             restricoes=restricoes_obj,
-            dados_geometricos=dados_geometricos
         )
         return matricula
         
@@ -1933,6 +1908,12 @@ class App(tk.Tk):
         if not paths:
             return
         if self.files:
+            # Notifica sistema de feedback sobre sucesso implícito antes de limpar
+            if hasattr(self, 'feedback_system'):
+                # Se havia processo anterior sem feedback negativo, envia feedback positivo
+                # (usuário está adicionando novos arquivos = satisfeito com resultado anterior)
+                self.feedback_system.on_relatorio_sucesso("novo_processamento")
+
             self.files.clear()
             for item in self.tree_files.get_children():
                 self.tree_files.delete(item)
@@ -2508,13 +2489,13 @@ class App(tk.Tk):
         for conf in lotes_normais:
             owners = owners_for(conf.matricula_anexada)
             owners_text = join_with_overflow(owners)
-            matricula_value = conf.matricula_anexada or "Não anexada"
+            matricula_value = conf.matricula_anexada or "⚠️ Matrícula não anexada"
             if not conf.matricula_anexada:
                 ident = (conf.identificador or "Confrontante sem identificação").strip()
                 if ident and ident not in missing_confrontantes:
                     missing_confrontantes.append(ident)
                 if not owners_text:
-                    owners_text = "Proprietários não avaliados (sem matrícula anexada)"
+                    owners_text = "⚠️ Proprietários não identificados (matrícula não anexada)"
             self.tree_confrontantes_lotes.insert(
                 "",
                 "end",
