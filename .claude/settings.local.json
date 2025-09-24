@@ -16,7 +16,11 @@
       "Bash(tree:*)",
       "Bash(./RelatorioTJMS.exe)",
       "Bash(powershell.exe:*)",
-      "Bash(dir)"
+      "Bash(dir)",
+      "Bash(gh release list:*)",
+      "Bash(gh release create:*)",
+      "Bash(gh release view:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

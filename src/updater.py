@@ -85,7 +85,7 @@ class AutoUpdater:
         elif self.is_executable:
             self.executable_name = os.path.basename(sys.executable)
         else:
-            self.executable_name = "RelatorioTJMS.exe"  # Nome padrão
+            self.executable_name = "analisador_matriculas.exe"  # Nome padrão
 
         # Detecta o caminho real do executável atual
         if self.is_executable:
@@ -819,7 +819,7 @@ def create_updater(repo_owner: str = "kaoyeoshiro", repo_name: str = "analisador
     return AutoUpdater(
         repo_owner=repo_owner,
         repo_name=repo_name,
-        executable_name="RelatorioTJMS.exe",
+        executable_name="analisador_matriculas.exe",
         silent=True,
         auto_update=True
     )

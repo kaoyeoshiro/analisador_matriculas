@@ -2308,9 +2308,6 @@ class App(tk.Tk):
         """Verifica se ha atualizacao e consulta o usuario antes de aplicar"""
         def update_thread():
             try:
-                # Primeiro, sincroniza a versão local com o GitHub
-                self.updater.sync_version_with_github()
-
                 # Depois verifica se há atualizações executáveis
                 update_info = self.updater.check_for_updates()
                 if update_info:
