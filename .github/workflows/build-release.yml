@@ -45,9 +45,9 @@ jobs:
 
     - name: Verify build output
       run: |
-        if (Test-Path "dist\RelatorioTJMS.exe") {
+        if (Test-Path "dist\analisador_matriculas.exe") {
           Write-Host "Build successful - executable found"
-          $size = (Get-Item "dist\RelatorioTJMS.exe").length
+          $size = (Get-Item "dist\analisador_matriculas.exe").length
           Write-Host "Executable size: $([math]::Round($size/1MB,2)) MB"
         } else {
           Write-Host "Build failed - executable not found"
@@ -75,7 +75,7 @@ jobs:
           📦 Executável gerado automaticamente
 
           ### Como Usar
-          1. Baixe o arquivo `RelatorioTJMS.exe`
+          1. Baixe o arquivo `analisador_matriculas.exe`
           2. Execute o arquivo baixado
           3. O sistema verificará automaticamente por atualizações
 
@@ -90,7 +90,7 @@ jobs:
         draft: false
         prerelease: false
         files: |
-          dist/RelatorioTJMS.exe
+          dist/analisador_matriculas.exe
           VERSION
         token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -99,6 +99,6 @@ jobs:
       with:
         name: build-artifacts-v${{ steps.version.outputs.VERSION }}
         path: |
-          dist/RelatorioTJMS.exe
+          dist/analisador_matriculas.exe
           VERSION
         retention-days: 30
