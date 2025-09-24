@@ -16,11 +16,7 @@ if os.path.exists('../config/.env.example'):
 if os.path.exists('../docs/FEEDBACK_SETUP.md'):
     datas.append(('../docs/FEEDBACK_SETUP.md', '.'))
 
-# Adiciona módulos do sistema como dados
-if os.path.exists('../src/updater.py'):
-    datas.append(('../src/updater.py', '.'))
-if os.path.exists('../src/feedback_system.py'):
-    datas.append(('../src/feedback_system.py', '.'))
+# Módulos do sistema são incluídos via hiddenimports
 
 a = Analysis(
     ['../src/main.py'],
@@ -65,8 +61,8 @@ a = Analysis(
         'textwrap',
         'csv',
         # Módulos do sistema
-        'updater',
-        'feedback_system',
+        'src.updater',
+        'src.feedback_system',
     ],
     hookspath=[],
     hooksconfig={},
@@ -84,7 +80,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='RelatorioTJMS',  # Nome padrão para o executável
+    name='analisador_matriculas',  # Nome do executável
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
