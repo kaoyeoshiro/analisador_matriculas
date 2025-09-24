@@ -8,6 +8,7 @@ import threading
 import tempfile
 import subprocess
 import base64
+import importlib
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple, Union
@@ -55,66 +56,82 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
+def _import_module_variants(module_basename: str):
+    """Resolve um módulo mesmo quando executado fora do pacote."""
+    candidates = []
+    if __package__:
+        candidates.append(f"{__package__}.{module_basename}")
+    candidates.extend([
+        module_basename,
+        f"src.{module_basename}",
+    ])
+
+    seen = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            return importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name != name:
+                raise
+        except ImportError:
+            continue
+    return None
+
+
 # --- Auto-atualização ---
-try:
-    # Tenta importação absoluta primeiro para o executável compilado
-    import sys
-    import os
-    if getattr(sys, 'frozen', False):
-        # Se estiver rodando como executável compilado
-        try:
-            import updater
-            from updater import create_updater
-        except ImportError:
-            from .updater import create_updater
-    else:
-        # Se estiver rodando como script Python
-        from .updater import create_updater
-except ImportError:
-    try:
-        from updater import create_updater
-    except ImportError:
-        # Se não conseguir importar, cria um updater dummy
-        def create_updater():
-            class DummyUpdater:
-                def __init__(self):
-                    self.auto_update = False
-                    self.parent_window = None
-                def sync_version_with_github(self): pass
-                def check_for_updates(self): return None
-                def update_if_available(self, progress_callback=None): return False
-            return DummyUpdater()
-        print("⚠️ Sistema de auto-atualização não disponível")
+_updater_module = _import_module_variants("updater")
+create_updater = getattr(_updater_module, "create_updater", None) if _updater_module else None
 
-try:
-    # Tenta importação absoluta primeiro para o executável compilado
-    if getattr(sys, 'frozen', False):
-        # Se estiver rodando como executável compilado
-        try:
-            import feedback_system
-            from feedback_system import initialize_feedback_system, get_feedback_system
-        except ImportError:
-            from .feedback_system import initialize_feedback_system, get_feedback_system
-    else:
-        # Se estiver rodando como script Python
-        from .feedback_system import initialize_feedback_system, get_feedback_system
-except ImportError:
-    try:
-        from feedback_system import initialize_feedback_system, get_feedback_system
-    except ImportError:
-        # Se não conseguir importar, cria dummy functions
-        class DummyFeedback:
-            def set_feedback_button(self, btn): pass
-            def apos_processo_completo(self, result): pass
-            def apos_geracao_planta(self, result): pass
-            def on_fechamento_aplicacao(self): pass
+if not callable(create_updater):
+    def create_updater():
+        class DummyUpdater:
+            def __init__(self):
+                self.auto_update = False
+                self.parent_window = None
 
-        def initialize_feedback_system(app_version=None, modelo_llm=None):
-            return DummyFeedback()
+            def sync_version_with_github(self):
+                return False
 
-        def get_feedback_system():
-            return DummyFeedback()
-        print("⚠️ Sistema de feedback não disponível")
+            def check_for_updates(self):
+                return None
+
+            def update_if_available(self, progress_callback=None):
+                return False
+
+        return DummyUpdater()
+
+    print("⚠️ Sistema de auto-atualização não disponível")
+
+
+# --- Sistema de feedback ---
+_feedback_module = _import_module_variants("feedback_system")
+initialize_feedback_system = getattr(_feedback_module, "initialize_feedback_system", None) if _feedback_module else None
+get_feedback_system = getattr(_feedback_module, "get_feedback_system", None) if _feedback_module else None
+
+if not callable(initialize_feedback_system) or not callable(get_feedback_system):
+    class DummyFeedback:
+        def set_feedback_button(self, btn):
+            return None
+
+        def apos_processo_completo(self, result):
+            return None
+
+        def apos_geracao_planta(self, result):
+            return None
+
+        def on_fechamento_aplicacao(self):
+            return None
+
+    def initialize_feedback_system(app_version=None, modelo_llm=None):
+        return DummyFeedback()
+
+    def get_feedback_system():
+        return DummyFeedback()
+
+    print("⚠️ Sistema de feedback não disponível")
 
 # =========================u
 # Configuração
