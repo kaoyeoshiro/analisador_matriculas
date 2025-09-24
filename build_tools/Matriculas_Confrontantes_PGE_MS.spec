@@ -16,7 +16,11 @@ if os.path.exists('../config/.env.example'):
 if os.path.exists('../docs/FEEDBACK_SETUP.md'):
     datas.append(('../docs/FEEDBACK_SETUP.md', '.'))
 
-# Módulos do sistema são incluídos via hiddenimports
+# Adiciona módulos do sistema como dados também para garantir inclusão
+if os.path.exists('../src/updater.py'):
+    datas.append(('../src/updater.py', 'src'))
+if os.path.exists('../src/feedback_system.py'):
+    datas.append(('../src/feedback_system.py', 'src'))
 
 a = Analysis(
     ['../src/main.py'],
@@ -60,7 +64,9 @@ a = Analysis(
         'datetime',
         'textwrap',
         'csv',
-        # Módulos do sistema
+        # Módulos do sistema - múltiplas tentativas para garantir inclusão
+        'updater',
+        'feedback_system',
         'src.updater',
         'src.feedback_system',
     ],

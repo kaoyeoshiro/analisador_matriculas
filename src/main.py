@@ -57,7 +57,19 @@ import tkinter.font as tkfont
 
 # --- Auto-atualização ---
 try:
-    from .updater import create_updater
+    # Tenta importação absoluta primeiro para o executável compilado
+    import sys
+    import os
+    if getattr(sys, 'frozen', False):
+        # Se estiver rodando como executável compilado
+        try:
+            import updater
+            from updater import create_updater
+        except ImportError:
+            from .updater import create_updater
+    else:
+        # Se estiver rodando como script Python
+        from .updater import create_updater
 except ImportError:
     try:
         from updater import create_updater
@@ -75,7 +87,17 @@ except ImportError:
         print("⚠️ Sistema de auto-atualização não disponível")
 
 try:
-    from .feedback_system import initialize_feedback_system, get_feedback_system
+    # Tenta importação absoluta primeiro para o executável compilado
+    if getattr(sys, 'frozen', False):
+        # Se estiver rodando como executável compilado
+        try:
+            import feedback_system
+            from feedback_system import initialize_feedback_system, get_feedback_system
+        except ImportError:
+            from .feedback_system import initialize_feedback_system, get_feedback_system
+    else:
+        # Se estiver rodando como script Python
+        from .feedback_system import initialize_feedback_system, get_feedback_system
 except ImportError:
     try:
         from feedback_system import initialize_feedback_system, get_feedback_system
