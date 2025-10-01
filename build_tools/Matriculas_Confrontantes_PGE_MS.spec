@@ -1,83 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Configuração PyInstaller para o sistema de auto-atualização
+from PyInstaller.utils.hooks import collect_all
 
-import os
+datas = [('../matrículas', 'matrículas')]
+binaries = []
+hiddenimports = ['PIL._tkinter_finder', 'requests', 'matplotlib', 'fitz', 'pdf2image', 'dotenv', 'pytesseract', 'easyocr']
+tmp_ret = collect_all('matplotlib')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('PIL')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('easyocr')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-# Constrói lista de datas condicionalmente
-datas = [('../VERSION', '.')]  # Arquivo VERSION é obrigatório
-
-# Adiciona .env apenas se existir
-if os.path.exists('../.env'):
-    datas.append(('../.env', '.'))
-
-# Adiciona arquivos de documentação do feedback
-if os.path.exists('../config/.env.example'):
-    datas.append(('../config/.env.example', '.'))
-if os.path.exists('../docs/FEEDBACK_SETUP.md'):
-    datas.append(('../docs/FEEDBACK_SETUP.md', '.'))
-
-# Adiciona módulos do sistema como dados também para garantir inclusão
-if os.path.exists('../src/updater.py'):
-    datas.append(('../src/updater.py', 'src'))
-if os.path.exists('../src/feedback_system.py'):
-    datas.append(('../src/feedback_system.py', 'src'))
 
 a = Analysis(
-    ['../src/main.py'],
-    pathex=['../src'],
-    binaries=[],
+    ['..\\main.py'],
+    pathex=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=[
-        'packaging.version',  # Necessário para updater.py
-        'requests',
-        'urllib.parse',
-        'fitz',  # PyMuPDF
-        'PIL',
-        'PIL.Image',
-        'pdf2image',
-        'pdf2image.utils',
-        'docx',
-        'docx.document',
-        'docx.shared',
-        'docx.oxml.ns',
-        'docx.enum.text',
-        'reportlab',
-        'reportlab.pdfgen',
-        'reportlab.lib.pagesizes',
-        'reportlab.lib.styles',
-        'reportlab.platypus',
-        'reportlab.lib.enums',
-        'dotenv',
-        'tkinter',
-        'tkinter.ttk',
-        'tkinter.filedialog',
-        'tkinter.messagebox',
-        'tkinter.font',
-        'threading',
-        'queue',
-        'json',
-        'base64',
-        'tempfile',
-        'subprocess',
-        'pathlib',
-        'dataclasses',
-        'datetime',
-        'textwrap',
-        'csv',
-        # Módulos do sistema - múltiplas tentativas para garantir inclusão
-        'updater',
-        'feedback_system',
-        'src.updater',
-        'src.feedback_system',
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['_tkinter'],
     noarchive=False,
     optimize=0,
 )
-
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -86,18 +33,21 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='analisador_matriculas',  # Nome do executável
+    name='Matriculas_Confrontantes_PGE_MS',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Adicione um ícone aqui se desejar: icon='icon.ico'
+    version='version_info.txt',
+    icon=None,
+    uac_admin=False,
+    uac_uiaccess=False,
 )

@@ -27,3 +27,7 @@ dataclasses>=0.6; python_version<"3.7"  # Built-in no Python 3.7+
 # Optional: CSV handling (built-in module, but for clarity)
 # csv  # Built-in module
 
+# Document generation
+python-docx>=0.8.11  # For DOCX template system
+docx2pdf>=0.1.8  # Optional: DOCX to PDF conversion (Windows/Mac fallback)
+

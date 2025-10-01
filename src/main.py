@@ -42,11 +42,11 @@ except ImportError:
     DOCX_AVAILABLE = False
 
 try:
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.lib.pagesizes import letter, A4  # type: ignore
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore
+    from reportlab.lib.units import inch  # type: ignore
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer  # type: ignore
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER  # type: ignore
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -133,7 +133,7 @@ if not callable(initialize_feedback_system) or not callable(get_feedback_system)
 
     print("⚠️ Sistema de feedback não disponível")
 
-# =========================u
+# =========================
 # Configuração
 # =========================
 APP_TITLE = "Analisador de Usucapião com IA Visual – Matrículas e Confrontantes (PGE-MS)"
@@ -713,7 +713,15 @@ UNIFIED_SYSTEM_PROMPT = (
     "• PESSOAS: nomes completos • EMPRESAS: razões sociais\n"
     "• VIAS PÚBLICAS: ruas, avenidas (PROPRIEDADE DO MUNICÍPIO)\n"
     "• RODOVIAS ESTADUAIS: apenas estas são de PROPRIEDADE DO ESTADO\n"
-    "• ENTES PÚBLICOS: Estado, Município • ACIDENTES GEOGRÁFICOS: rios, córregos\n\n"
+    "• ENTES PÚBLICOS: Estado, Município\n"
+    "• ACIDENTES GEOGRÁFICOS: rios, córregos, lagos\n\n"
+
+    "🌊 REGRA CRÍTICA SOBRE RIOS E CORPOS D'ÁGUA:\n"
+    "• Confrontação com rios, córregos, ribeirões, lagos NÃO representa interesse do Estado de MS\n"
+    "• MESMO que seja rio estadual, isso NÃO configura interesse do Estado no processo\n"
+    "• Rios como confrontantes são IRRELEVANTES para determinar interesse estadual\n"
+    "• APENAS identifique o rio como confrontante (acidente geográfico)\n"
+    "• NUNCA considere rio/córrego/lago como indicativo de interesse do Estado de MS\n\n"
 
     "⚡ REGRAS CRÍTICAS:\n"
     "• LEIA PALAVRA POR PALAVRA da descrição do imóvel principal\n"
@@ -737,10 +745,15 @@ UNIFIED_SYSTEM_PROMPT = (
 
 
     "🚨 VERIFICAÇÕES OBRIGATÓRIAS:\n"
-    "• Estado de MS como confrontante ou com direitos registrados?\n"
+    "• Estado de MS como PROPRIETÁRIO ou com RESTRIÇÕES registradas?\n"
     "• Mínimo 4 confrontantes identificados?\n"
     "• Proprietários atuais confirmados?\n"
     "• Todas as matrículas mapeadas?\n\n"
+
+    "⚠️ ATENÇÃO: Estado de MS como mero confrontante (vizinho) NÃO configura interesse!\n"
+    "Interesse do Estado existe APENAS quando ele é:\n"
+    "• PROPRIETÁRIO da matrícula OU\n"
+    "• Titular de RESTRIÇÃO/GRAVAME (penhora, hipoteca, etc.)\n\n"
 
     "🔥 ZERO TOLERÂNCIA para confrontantes perdidos. Cada um é VITAL.\n\n"
 
@@ -1909,9 +1922,15 @@ class App(tk.Tk):
         self.btn_update = ttk.Button(top, text="Verificar Atualizações", command=self.manual_check_updates)
         self.btn_update.pack(side="right", padx=(8,0))
 
-        # Progress bar
-        self.progress = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=220)
-        self.progress.pack(side="right")
+        # Progress bar com label de status
+        progress_frame = ttk.Frame(top)
+        progress_frame.pack(side="right", padx=(8,0))
+
+        self.progress_label = ttk.Label(progress_frame, text="Aguardando...", foreground="gray")
+        self.progress_label.pack(side="top")
+
+        self.progress = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", length=220)
+        self.progress.pack(side="top")
 
         # Split: esquerda (lista arquivos) / direita (resultados)
         split = ttk.Panedwindow(self, orient="horizontal")
@@ -1948,7 +1967,16 @@ class App(tk.Tk):
         )
         # Label inicialmente oculto
         self.estado_alert_label.pack_forget()
-        
+
+        # Indicador de processamento (exibido apenas durante tarefas em andamento)
+        self.processing_indicator = ttk.Frame(right, padding=(10, 6))
+        self.processing_spinner = ttk.Progressbar(self.processing_indicator, mode="indeterminate", length=120)
+        self.processing_spinner.pack(side="left")
+        self.processing_status_label = ttk.Label(self.processing_indicator, text="Processando matrículas...")
+        self.processing_status_label.pack(side="left", padx=(10, 0))
+        self.processing_indicator.pack(fill="x", padx=5, pady=(0, 6))
+        self.processing_indicator.pack_forget()
+
         ttk.Label(right, text="Detalhamento das Matrículas").pack(anchor="w", pady=(0,4))
 
         self.results_notebook = ttk.Notebook(right)
@@ -2108,8 +2136,12 @@ class App(tk.Tk):
             return
         model = DEFAULT_MODEL
 
+        # Atualiza interface para mostrar que está processando
+        self.btn_process.config(state="disabled", text="⏳ Processando...")
+        self.progress_label.config(text="Iniciando processamento...", foreground="blue")
         self.progress["value"] = 0
         self.progress["maximum"] = len(self.files)
+        self._show_processing_indicator("Iniciando processamento das matrículas...")
         self.results.clear()
         self.clear_result_views()
         self.cached_full_report_text = None
@@ -2118,12 +2150,31 @@ class App(tk.Tk):
         t = threading.Thread(target=self._worker_process, args=(model,), daemon=True)
         t.start()
 
+    def _show_processing_indicator(self, message: str = "Processando matrículas..."):
+        """Exibe barra indeterminada informando que há processamento em andamento."""
+        self.processing_status_label.config(text=message)
+        if not self.processing_indicator.winfo_ismapped():
+            self.processing_indicator.pack(fill="x", padx=5, pady=(0, 6))
+        self.processing_spinner.start(12)
+
+    def _update_processing_indicator(self, message: str):
+        """Atualiza texto do indicador sem interromper a animação."""
+        self.processing_status_label.config(text=message)
+
+    def _hide_processing_indicator(self):
+        """Esconde o indicador e interrompe a animação."""
+        self.processing_spinner.stop()
+        if self.processing_indicator.winfo_ismapped():
+            self.processing_indicator.pack_forget()
+
     def _worker_process(self, model: str):
         for idx, path in enumerate(self.files, 1):
             filename = os.path.basename(path)
             try:
+                # Atualiza status visual
+                self.queue.put(("status", f"📄 Arquivo {idx}/{len(self.files)}: {filename}"))
                 self.queue.put(("log", f"📄 Processando {filename} ({idx}/{len(self.files)})"))
-                
+
                 # Verifica se o arquivo existe e diagnostica problemas
                 if not os.path.exists(path):
                     self.queue.put(("log", f"❌ Arquivo não encontrado: {filename}"))
@@ -2216,6 +2267,11 @@ class App(tk.Tk):
             finally:
                 self.queue.put(("progress", 1))
 
+        # Processamento concluído
+        self.queue.put(("status", "✅ Processamento concluído!"))
+        self.queue.put(("log", f"🎉 Processamento finalizado! {len(self.files)} arquivo(s) processado(s)."))
+        self.queue.put(("finish", None))
+
     def export_csv(self):
         if not self.results:
             messagebox.showinfo("Sem resultados", "Nada para exportar ainda.")
@@ -2262,6 +2318,15 @@ class App(tk.Tk):
                 kind, payload = self.queue.get_nowait()
                 if kind == "log":
                     self.log(payload)
+                elif kind == "status":
+                    # Atualiza label de status
+                    self.progress_label.config(text=payload, foreground="blue")
+                    self._update_processing_indicator(payload)
+                elif kind == "finish":
+                    # Restaura botão e status ao concluir
+                    self.btn_process.config(state="normal", text="Processar")
+                    self.progress_label.config(text="Concluído!", foreground="green")
+                    self._hide_processing_indicator()
                 elif kind == "result":
                     # payload agora contém: path, result_object (AnalysisResult)
                     path, result = payload
@@ -3022,9 +3087,18 @@ class App(tk.Tk):
         return "; ".join(issues)
 
     def check_estado_ms_rights(self, analysis_result: AnalysisResult) -> Optional[str]:
-        """Verifica se o Estado de MS tem direitos registrados nas matrículas"""
+        """
+        Verifica se o Estado de MS tem direitos registrados nas matrículas.
+
+        IMPORTANTE: Esta função verifica apenas:
+        - Se o Estado é PROPRIETÁRIO de alguma matrícula
+        - Se o Estado tem RESTRIÇÕES registradas (penhora, hipoteca, etc.)
+
+        NÃO considera meras confrontações com rios/córregos como interesse do Estado,
+        pois rios podem ser federais, estaduais ou privados.
+        """
         direitos_encontrados = []
-        
+
         # Verifica em todas as matrículas
         for matricula in analysis_result.matriculas_encontradas:
             # Verifica se Estado de MS é proprietário
@@ -3241,12 +3315,15 @@ class App(tk.Tk):
         report_window = tk.Toplevel(self)
         report_window.title("Relatório Completo da Matrícula")
         report_window.geometry("920x740")
+        report_window.minsize(780, 560)
         report_window.transient(self)
+        report_window.columnconfigure(0, weight=1)
+        report_window.rowconfigure(1, weight=1)
 
-        ttk.Label(report_window, text="📄 Relatório completo gerado pela IA", font=("Arial", 14, "bold")).pack(pady=(12, 6))
+        ttk.Label(report_window, text="Relatório completo gerado pela IA").grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
 
         text_frame = ttk.Frame(report_window)
-        text_frame.pack(fill="both", expand=True, padx=12, pady=12)
+        text_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 6))
 
         txt_report = tk.Text(
             text_frame,
@@ -3264,23 +3341,54 @@ class App(tk.Tk):
         content = report_text.strip() or "Relatório vazio retornado pela IA."
         self._render_markdown_content(txt_report, content)
 
+        # Frame de botões - NÃO expande
         button_frame = ttk.Frame(report_window)
-        button_frame.pack(fill="x", padx=12, pady=(0, 12))
+        button_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(6, 12))
 
-        # Primeira linha de botões
-        top_buttons = ttk.Frame(button_frame)
-        top_buttons.pack(fill="x", pady=(0, 4))
+        # Área de ações do relatório
+        ttk.Label(button_frame, text="Ações do relatório").pack(anchor="w", pady=(0, 6))
 
-        ttk.Button(top_buttons, text="📋 Copiar formatado", command=lambda: self._copy_formatted_to_clipboard(content)).pack(side="left")
-        ttk.Button(top_buttons, text="💾 Salvar", command=lambda: self._save_report_with_format_selection(content)).pack(side="left", padx=(8, 0))
+        download_frame = ttk.Frame(button_frame)
+        download_frame.pack(fill="x", pady=(0, 6))
+        for col in range(3):
+            download_frame.columnconfigure(col, weight=1, uniform="download")
 
-        # Segunda linha de botões
-        bottom_buttons = ttk.Frame(button_frame)
-        bottom_buttons.pack(fill="x")
+        ttk.Button(
+            download_frame,
+            text="Salvar como DOCX",
+            command=lambda: self._save_as_docx(content),
+        ).grid(row=0, column=0, padx=(0, 4), pady=(0, 2), sticky="ew")
 
-        ttk.Button(bottom_buttons, text="🧾 Ver dados enviados", command=lambda: self._show_payload_window("Dados estruturados enviados", payload_json)).pack(side="left")
-        ttk.Button(bottom_buttons, text="💾 Salvar JSON", command=lambda: self._save_text_to_file(payload_json, title="Salvar Dados Estruturados", default_extension=".json")).pack(side="left", padx=(8, 0))
-        ttk.Button(bottom_buttons, text="Fechar", command=report_window.destroy).pack(side="right")
+        ttk.Button(
+            download_frame,
+            text="Salvar como PDF",
+            command=lambda: self._save_as_pdf(content),
+        ).grid(row=0, column=1, padx=4, pady=(0, 2), sticky="ew")
+
+        ttk.Button(
+            download_frame,
+            text="Copiar texto",
+            command=lambda: self._copy_formatted_to_clipboard(content),
+        ).grid(row=0, column=2, padx=(4, 0), pady=(0, 2), sticky="ew")
+
+        ttk.Separator(button_frame, orient="horizontal").pack(fill="x", pady=8)
+
+        secondary_frame = ttk.Frame(button_frame)
+        secondary_frame.pack(fill="x")
+
+        ttk.Button(
+            secondary_frame,
+            text="Ver JSON",
+            command=lambda: self._show_payload_window("Dados estruturados enviados", payload_json),
+        ).pack(side="left")
+
+        ttk.Button(
+            secondary_frame,
+            text="Salvar JSON",
+            command=lambda: self._save_text_to_file(payload_json, title="Salvar Dados Estruturados", default_extension=".json"),
+        ).pack(side="left", padx=6)
+
+        ttk.Button(secondary_frame, text="Fechar", command=report_window.destroy).pack(side="right")
 
     def _show_full_report_error(self, error: str, progress_window: tk.Toplevel):
         """Trata falhas na geração do relatório completo."""
@@ -3488,8 +3596,275 @@ class App(tk.Tk):
                 result += rf"\b {part}\b0 "
         return result
 
+    def _process_docx_inline_formatting(self, paragraph, text: str, base_italic: bool = False):
+        """
+        Processa formatação inline markdown e adiciona runs formatados ao parágrafo DOCX
+
+        Suporta:
+        - **negrito**
+        - *itálico*
+        - "citações" (itálico)
+        """
+        if not DOCX_AVAILABLE:
+            paragraph.add_run(text)
+            return
+
+        i = 0
+        current_text = ""
+
+        while i < len(text):
+            # Negrito **texto**
+            if text[i:i+2] == '**':
+                end_pos = text.find('**', i+2)
+                if end_pos != -1:
+                    if current_text:
+                        run = paragraph.add_run(current_text)
+                        if base_italic:
+                            run.italic = True
+                        current_text = ""
+
+                    bold_text = text[i+2:end_pos]
+                    run = paragraph.add_run(bold_text)
+                    run.bold = True
+                    if base_italic:
+                        run.italic = True
+
+                    i = end_pos + 2
+                    continue
+
+            # Itálico *texto*
+            elif text[i] == '*' and (i+1 < len(text) and text[i+1] != '*'):
+                end_pos = text.find('*', i+1)
+                if end_pos != -1 and (end_pos+1 >= len(text) or text[end_pos+1] != '*'):
+                    if current_text:
+                        run = paragraph.add_run(current_text)
+                        if base_italic:
+                            run.italic = True
+                        current_text = ""
+
+                    italic_text = text[i+1:end_pos]
+                    run = paragraph.add_run(italic_text)
+                    run.italic = True
+
+                    i = end_pos + 1
+                    continue
+
+            # Citações "texto"
+            elif text[i] == '"':
+                end_pos = text.find('"', i+1)
+                if end_pos != -1:
+                    if current_text:
+                        run = paragraph.add_run(current_text)
+                        if base_italic:
+                            run.italic = True
+                        current_text = ""
+
+                    quote_text = text[i:end_pos+1]
+                    run = paragraph.add_run(quote_text)
+                    run.italic = True
+
+                    i = end_pos + 1
+                    continue
+
+            current_text += text[i]
+            i += 1
+
+        # Adicionar texto restante
+        if current_text:
+            run = paragraph.add_run(current_text)
+            if base_italic:
+                run.italic = True
+
+    def _markdown_to_docx(self, markdown_text: str, output_path: str, numero_processo: str = "") -> Union[bool, str]:
+        """
+        Converte markdown para DOCX usando python-docx com template se disponível
+
+        Args:
+            markdown_text: Conteúdo em Markdown gerado pela IA
+            output_path: Caminho completo do arquivo DOCX de saída
+            numero_processo: Número do processo (opcional, para título)
+
+        Returns:
+            True se sucesso, string com mensagem de erro se falhar
+        """
+        if not DOCX_AVAILABLE:
+            return "Biblioteca python-docx não instalada. Execute: pip install python-docx"
+
+        try:
+            # Tentar carregar template personalizado
+            template_path = os.path.join("templates", "template.docx")
+
+            if os.path.exists(template_path):
+                try:
+                    doc = Document(template_path)
+                    self.log("📄 Template DOCX carregado de templates/template.docx")
+
+                    # LIMPAR CONTEÚDO DO TEMPLATE (importante!)
+                    # Remove parágrafos existentes mas mantém cabeçalho/rodapé
+                    paragraphs_to_remove = []
+                    for paragraph in doc.paragraphs:
+                        paragraphs_to_remove.append(paragraph)
+
+                    for paragraph in paragraphs_to_remove:
+                        try:
+                            p = paragraph._element
+                            p.getparent().remove(p)
+                        except:
+                            pass  # Ignora erros
+
+                except Exception as e:
+                    self.log(f"⚠️ Erro ao carregar template: {e}. Usando documento em branco.")
+                    doc = Document()  # Fallback para documento vazio
+            else:
+                # Se não existe template, cria documento em branco
+                doc = Document()
+                self.log("📄 Criando documento DOCX em branco (sem template)")
+
+            # Processar markdown linha por linha
+            lines = markdown_text.split('\n')
+            list_counter = 0
+
+            for line in lines:
+                line = line.rstrip()
+                stripped = line.strip()
+
+                # Linha vazia
+                if not stripped:
+                    doc.add_paragraph()
+                    list_counter = 0
+                    continue
+
+                # Cabeçalho H1 (#)
+                if stripped.startswith('# '):
+                    p = doc.add_paragraph()
+                    p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                    run = p.add_run(stripped[2:].strip())
+                    run.font.size = Pt(16)
+                    run.font.bold = True
+                    from docx.shared import RGBColor
+                    run.font.color.rgb = RGBColor(46, 74, 107)
+                    list_counter = 0
+                    continue
+
+                # Cabeçalho H2 (##)
+                elif stripped.startswith('## '):
+                    p = doc.add_paragraph()
+                    run = p.add_run(stripped[3:].strip())
+                    run.font.size = Pt(14)
+                    run.font.bold = True
+                    from docx.shared import RGBColor
+                    run.font.color.rgb = RGBColor(46, 74, 107)
+                    list_counter = 0
+                    continue
+
+                # Cabeçalho H3 (###)
+                elif stripped.startswith('### '):
+                    p = doc.add_paragraph()
+                    run = p.add_run(stripped[4:].strip())
+                    run.font.size = Pt(12)
+                    run.font.bold = True
+                    from docx.shared import RGBColor
+                    run.font.color.rgb = RGBColor(46, 74, 107)
+                    list_counter = 0
+                    continue
+
+                # Listas (-, *, •)
+                elif stripped.startswith(('- ', '* ', '• ')):
+                    text = stripped[2:].strip()
+                    list_counter += 1
+
+                    # Usar letras (a, b, c...)
+                    if list_counter <= 26:
+                        letter = chr(ord('a') + list_counter - 1)
+                        marker = f"{letter}) "
+                    else:
+                        marker = "• "
+
+                    p = doc.add_paragraph()
+                    p.add_run(marker)
+                    self._process_docx_inline_formatting(p, text)
+                    p.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+                    continue
+
+                # Separadores (---, ***)
+                elif stripped in {'---', '***', '___'}:
+                    doc.add_paragraph()
+                    list_counter = 0
+                    continue
+
+                # Texto normal
+                else:
+                    p = doc.add_paragraph()
+                    self._process_docx_inline_formatting(p, stripped)
+                    p.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+                    list_counter = 0
+
+            # Salvar documento final
+            doc.save(output_path)
+            self.log(f"✅ DOCX gerado: {os.path.basename(output_path)}")
+            return True
+
+        except Exception as e:
+            error_msg = f"Erro ao gerar DOCX: {e}"
+            self.log(f"❌ {error_msg}")
+            return error_msg
+
+    def _docx_to_pdf(self, docx_path: str, pdf_path: str) -> Union[bool, str]:
+        """
+        Converte DOCX para PDF usando LibreOffice ou docx2pdf
+
+        Args:
+            docx_path: Caminho do arquivo DOCX
+            pdf_path: Caminho do arquivo PDF de saída
+
+        Returns:
+            True se sucesso, string com mensagem de erro se falhar
+        """
+        # Opção 1: LibreOffice (melhor qualidade)
+        try:
+            output_dir = os.path.dirname(pdf_path)
+            cmd = [
+                "soffice", "--headless", "--convert-to", "pdf",
+                "--outdir", output_dir, docx_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode == 0:
+                # LibreOffice cria arquivo com nome baseado no DOCX
+                docx_name = os.path.splitext(os.path.basename(docx_path))[0]
+                generated_pdf = os.path.join(output_dir, docx_name + ".pdf")
+
+                if os.path.exists(generated_pdf) and generated_pdf != pdf_path:
+                    os.rename(generated_pdf, pdf_path)
+
+                self.log("✅ DOCX convertido para PDF com LibreOffice")
+                return True
+
+        except subprocess.TimeoutExpired:
+            self.log("⚠️ LibreOffice timeout - tentando alternativa")
+        except FileNotFoundError:
+            self.log("⚠️ LibreOffice não encontrado - tentando alternativa")
+        except Exception as e:
+            self.log(f"⚠️ LibreOffice falhou: {e} - tentando alternativa")
+
+        # Opção 2: python-docx2pdf (fallback)
+        try:
+            from docx2pdf import convert
+            convert(docx_path, pdf_path)
+            self.log("✅ DOCX convertido para PDF com docx2pdf")
+            return True
+        except ImportError:
+            error_msg = "Para conversão DOCX→PDF instale LibreOffice ou pip install docx2pdf"
+            self.log(f"⚠️ {error_msg}")
+            return error_msg
+        except Exception as e:
+            error_msg = f"Erro na conversão para PDF: {e}"
+            self.log(f"❌ {error_msg}")
+            return error_msg
+
     def _save_as_docx(self, markdown_text: str):
-        """Salva o relatório como arquivo DOCX"""
+        """Salva o relatório como arquivo DOCX usando sistema de templates"""
         if not DOCX_AVAILABLE:
             messagebox.showerror("Erro", "Biblioteca python-docx não instalada. Execute: pip install python-docx")
             return
@@ -3503,73 +3878,16 @@ class App(tk.Tk):
         if not filename:
             return
 
-        try:
-            doc = Document()
+        # Usar nova função com suporte a templates
+        result = self._markdown_to_docx(markdown_text, filename)
 
-            # Configurar estilos
-            styles = doc.styles
-
-            # Estilo para título principal
-            if 'Titulo1' not in styles:
-                title_style = styles.add_style('Titulo1', WD_STYLE_TYPE.PARAGRAPH)
-                title_style.font.size = Pt(18)
-                title_style.font.bold = True
-                title_style.font.name = 'Calibri'
-
-            # Estilo para subtítulos
-            if 'Titulo2' not in styles:
-                subtitle_style = styles.add_style('Titulo2', WD_STYLE_TYPE.PARAGRAPH)
-                subtitle_style.font.size = Pt(14)
-                subtitle_style.font.bold = True
-                subtitle_style.font.name = 'Calibri'
-
-            # Processa o markdown
-            lines = markdown_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    doc.add_paragraph()
-                    continue
-
-                if line.startswith('# '):
-                    title = line[2:].strip()
-                    doc.add_heading(title, level=1)
-                elif line.startswith('## '):
-                    subtitle = line[3:].strip()
-                    doc.add_heading(subtitle, level=2)
-                elif line.startswith('### '):
-                    heading = line[4:].strip()
-                    doc.add_heading(heading, level=3)
-                elif line.startswith(('• ', '- ', '* ')):
-                    content = line[2:].strip()
-                    p = doc.add_paragraph()
-                    p.style = 'List Bullet'
-                    self._add_formatted_text(p, content)
-                else:
-                    p = doc.add_paragraph()
-                    self._add_formatted_text(p, line)
-
-            doc.save(filename)
-            messagebox.showinfo("Salvo", f"Relatório DOCX salvo em: {filename}")
-
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao salvar DOCX: {e}")
-
-    def _add_formatted_text(self, paragraph, text):
-        """Adiciona texto com formatação em negrito ao parágrafo do Word"""
-        parts = text.split('**')
-        for i, part in enumerate(parts):
-            if i % 2 == 0:  # Texto normal
-                paragraph.add_run(part)
-            else:  # Texto em negrito
-                paragraph.add_run(part).bold = True
+        if result is True:
+            messagebox.showinfo("Salvo", f"Relatório DOCX salvo em:\n{filename}")
+        else:
+            messagebox.showerror("Erro", str(result))
 
     def _save_as_pdf(self, markdown_text: str):
-        """Salva o relatório como arquivo PDF"""
-        if not REPORTLAB_AVAILABLE:
-            messagebox.showerror("Erro", "Biblioteca reportlab não instalada. Execute: pip install reportlab")
-            return
-
+        """Salva o relatório como arquivo PDF (via DOCX→PDF ou direto com reportlab)"""
         filename = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
@@ -3577,6 +3895,52 @@ class App(tk.Tk):
         )
 
         if not filename:
+            return
+
+        # Estratégia: Gerar DOCX temporário e converter para PDF (melhor qualidade + suporte a templates)
+        if DOCX_AVAILABLE:
+            try:
+                # Criar arquivo DOCX temporário
+                temp_docx = tempfile.NamedTemporaryFile(mode='w', suffix='.docx', delete=False)
+                temp_docx_path = temp_docx.name
+                temp_docx.close()
+
+                # Gerar DOCX com template
+                docx_result = self._markdown_to_docx(markdown_text, temp_docx_path)
+
+                if docx_result is True:
+                    # Converter DOCX para PDF
+                    pdf_result = self._docx_to_pdf(temp_docx_path, filename)
+
+                    # Limpar arquivo temporário
+                    try:
+                        os.unlink(temp_docx_path)
+                    except:
+                        pass
+
+                    if pdf_result is True:
+                        messagebox.showinfo("Salvo", f"Relatório PDF salvo em:\n{filename}")
+                        return
+                    else:
+                        # Se conversão falhou, tentar reportlab como fallback
+                        self.log(f"⚠️ Falha na conversão DOCX→PDF: {pdf_result}")
+                        self.log("⚠️ Tentando gerar PDF direto com reportlab...")
+                else:
+                    self.log(f"⚠️ Falha ao gerar DOCX: {docx_result}")
+                    self.log("⚠️ Tentando gerar PDF direto com reportlab...")
+
+            except Exception as e:
+                self.log(f"⚠️ Erro ao gerar PDF via DOCX: {e}")
+                self.log("⚠️ Tentando gerar PDF direto com reportlab...")
+
+        # Fallback: reportlab (sem template)
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("Erro",
+                "Não foi possível gerar PDF.\n\n"
+                "Soluções:\n"
+                "1. Instale LibreOffice (recomendado)\n"
+                "2. Execute: pip install reportlab\n"
+                "3. Salve como DOCX e converta manualmente")
             return
 
         try:
@@ -3629,7 +3993,8 @@ class App(tk.Tk):
                     story.append(Paragraph(content, styles['Normal']))
 
             doc.build(story)
-            messagebox.showinfo("Salvo", f"Relatório PDF salvo em: {filename}")
+            self.log("⚠️ PDF gerado com reportlab (sem template)")
+            messagebox.showinfo("Salvo", f"Relatório PDF salvo em:\n{filename}\n\n(Nota: PDF gerado sem template. Para melhor qualidade, instale LibreOffice)")
 
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao salvar PDF: {e}")

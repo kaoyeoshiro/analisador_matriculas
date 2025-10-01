@@ -26,31 +26,53 @@ def create_exe():
     # Limpa builds anteriores
     clean_build_dirs()
     
+    # Verifica se a pasta matrículas existe
+    matriculas_path = Path('../matrículas')
+    if not matriculas_path.exists():
+        print(f"⚠️ Pasta 'matrículas' não encontrada em: {matriculas_path.absolute()}")
+        print("📝 Criando pasta de exemplo...")
+        matriculas_path.mkdir(exist_ok=True)
+        # Cria um arquivo placeholder
+        (matriculas_path / 'coloque_seus_pdfs_aqui.txt').write_text(
+            'Coloque seus arquivos PDF de matrículas nesta pasta antes de usar o programa.',
+            encoding='utf-8'
+        )
+    
     # Configurações do PyInstaller
     pyinstaller_args = [
         'pyinstaller',
         '--onefile',  # Arquivo único
         '--windowed',  # Interface gráfica (sem console)
         '--name=Matriculas_Confrontantes_PGE_MS',  # Nome do executável
-        '--add-data=matrículas;matrículas',  # Inclui pasta de PDFs exemplo
+        '--add-data=../matrículas;matrículas',  # Inclui pasta de PDFs exemplo
         '--hidden-import=PIL._tkinter_finder',  # Import implícito necessário
         '--hidden-import=requests',
         '--hidden-import=matplotlib',
         '--hidden-import=fitz',  # PyMuPDF
         '--hidden-import=pdf2image',
         '--hidden-import=dotenv',
+        '--hidden-import=pytesseract',  # OCR
+        '--hidden-import=easyocr',  # OCR alternativo
         '--collect-all=matplotlib',  # Coleta todos os arquivos do matplotlib
         '--collect-all=PIL',  # Coleta todos os arquivos do Pillow
+        '--collect-all=easyocr',  # Coleta arquivos do EasyOCR
         '--exclude-module=_tkinter',  # Exclui módulo problemático
-        '--debug=all',  # Debug para ver problemas
+        '--noconfirm',  # Não pergunta para sobrescrever
         '../main.py'
     ]
     
     try:
-        print("📦 Executando PyInstaller...")
-        result = subprocess.run(pyinstaller_args, check=True, capture_output=True, text=True)
+        print("📦 Executando PyInstaller com arquivo spec...")
+        # Usa o arquivo .spec que contém informações de versão
+        spec_file = Path('Matriculas_Confrontantes_PGE_MS.spec')
+        if spec_file.exists():
+            result = subprocess.run(['pyinstaller', '--noconfirm', str(spec_file)],
+                                  check=True, capture_output=True, text=True)
+        else:
+            result = subprocess.run(pyinstaller_args, check=True, capture_output=True, text=True)
+
         print("✅ PyInstaller executado com sucesso!")
-        
+
         # Verifica se o executável foi criado
         exe_path = Path('dist/Matriculas_Confrontantes_PGE_MS.exe')
         if exe_path.exists():
@@ -65,9 +87,29 @@ def create_exe():
             
             # Copia executável para pasta de distribuição
             shutil.copy2(exe_path, dist_folder / 'Matriculas_Confrontantes_PGE_MS.exe')
+
+            # Copia guia de execução
+            guia_path = Path('COMO_EXECUTAR.md')
+            if guia_path.exists():
+                shutil.copy2(guia_path, dist_folder / 'COMO_EXECUTAR.md')
             
             # Cria arquivo README para distribuição
             readme_content = """# Analisador de Usucapião com IA Visual - Matrículas e Confrontantes (PGE-MS)
+
+## ⚠️ AVISO DO WINDOWS - ISSO É NORMAL!
+
+Quando você executar o programa pela primeira vez, o Windows mostrará um aviso de segurança.
+Isso acontece porque o executável não tem assinatura digital comercial (que custa $300-500/ano).
+
+**O programa é 100% seguro!**
+
+Para executar:
+1. Clique em "Mais informações"
+2. Clique em "Executar assim mesmo"
+
+Você só precisará fazer isso UMA VEZ. Depois disso, o programa abrirá normalmente.
+
+---
 
 ## Como usar:
 
@@ -90,6 +132,7 @@ def create_exe():
 Este sistema foi desenvolvido para a Procuradoria-Geral do Estado de Mato Grosso do Sul (PGE-MS)
 para análise automatizada de processos de usucapião.
 
+Código-fonte: https://github.com/seu-usuario/matriculas-confrontantes
 Versão: 1.0.0
 Data: Setembro 2025
 """
@@ -98,6 +141,7 @@ Data: Setembro 2025
                 f.write(readme_content)
             
             print(f"📦 Pasta de distribuição criada: {dist_folder.absolute()}")
+
             print("\n🎯 PRÓXIMOS PASSOS:")
             print("1. Configure o Google Forms seguindo o guia fornecido")
             print("2. Atualize as configurações GOOGLE_FORM_CONFIG no código")
@@ -109,8 +153,28 @@ Data: Setembro 2025
             
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro durante execução do PyInstaller:")
-        print(f"Stdout: {e.stdout}")
-        print(f"Stderr: {e.stderr}")
+        print(f"Código de saída: {e.returncode}")
+        
+        if e.stdout:
+            print(f"\n📤 Stdout:")
+            print(e.stdout)
+        
+        if e.stderr:
+            print(f"\n📥 Stderr:")
+            print(e.stderr)
+        
+        # Diagnósticos comuns
+        if "Unable to find" in str(e.stderr):
+            print(f"\n🔍 DIAGNÓSTICO: Arquivo ou pasta não encontrada")
+            print(f"💡 Verifique se todos os caminhos estão corretos")
+            print(f"📂 Executando de: {os.getcwd()}")
+            print(f"📂 Pasta main.py: {Path('../main.py').absolute()}")
+            print(f"📂 Pasta matrículas: {Path('../matrículas').absolute()}")
+        
+        return False
+    
+    except Exception as e:
+        print(f"❌ Erro inesperado: {e}")
         return False
     
     return True
