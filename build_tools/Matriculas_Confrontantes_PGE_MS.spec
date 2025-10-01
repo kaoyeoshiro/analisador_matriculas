@@ -9,7 +9,7 @@ if os.path.exists(matriculas_path):
     datas.append((matriculas_path, 'matrículas'))
 
 binaries = []
-hiddenimports = ['PIL._tkinter_finder', 'requests', 'fitz', 'pdf2image', 'dotenv']
+hiddenimports = ['PIL._tkinter_finder', 'requests', 'fitz', 'pdf2image', 'dotenv', 'src', 'src.main']
 
 # Coleta dependências do PIL (essencial)
 try:
@@ -32,9 +32,16 @@ except:
     pass
 
 
+try:
+    tmp_ret = collect_all('src')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except:
+    pass
+
+
 a = Analysis(
     ['..\\main.py'],
-    pathex=[],
+    pathex=[os.path.abspath('..')],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
