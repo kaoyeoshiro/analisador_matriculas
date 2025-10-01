@@ -2,20 +2,32 @@
 """Ponto de entrada principal do Sistema de Análise de Matrículas Confrontantes."""
 
 import importlib
+import importlib.util
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent
-SRC_DIR = ROOT_DIR / "src"
+_BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+_SRC_DIR = _BASE_DIR / "src"
 
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+for candidate in (_BASE_DIR, _SRC_DIR):
+    candidate_str = str(candidate)
+    if candidate_str not in sys.path and candidate.exists():
+        sys.path.insert(0, candidate_str)
 
 
 def run():
-    module = importlib.import_module("src.main")
+    try:
+        module = importlib.import_module("src.main")
+    except ModuleNotFoundError:
+        fallback_path = _SRC_DIR / "main.py"
+        if not fallback_path.exists():
+            raise
+        spec = importlib.util.spec_from_file_location("src.main", fallback_path)
+        if spec is None or spec.loader is None:
+            raise
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[attr-defined]
+
     if hasattr(module, "main"):
         module.main()
     else:
