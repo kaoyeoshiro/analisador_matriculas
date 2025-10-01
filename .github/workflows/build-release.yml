@@ -57,8 +57,16 @@ jobs:
 
     - name: Verify build output
       run: |
-        if (Test-Path "build_tools\dist\Matriculas_Confrontantes_PGE_MS.exe") {
-          Write-Host "Build successful - executable found"
+        # PyInstaller gera na raiz quando chamado da raiz
+        if (Test-Path "dist\Matriculas_Confrontantes_PGE_MS.exe") {
+          Write-Host "Build successful - executable found in dist/"
+          $size = (Get-Item "dist\Matriculas_Confrontantes_PGE_MS.exe").length
+          Write-Host "Executable size: $([math]::Round($size/1MB,2)) MB"
+
+          # Renomeia para nome final
+          Copy-Item "dist\Matriculas_Confrontantes_PGE_MS.exe" "dist\analisador_matriculas.exe"
+        } elseif (Test-Path "build_tools\dist\Matriculas_Confrontantes_PGE_MS.exe") {
+          Write-Host "Build successful - executable found in build_tools/dist/"
           $size = (Get-Item "build_tools\dist\Matriculas_Confrontantes_PGE_MS.exe").length
           Write-Host "Executable size: $([math]::Round($size/1MB,2)) MB"
 
@@ -66,7 +74,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "build_tools\dist\Matriculas_Confrontantes_PGE_MS.exe" "dist\analisador_matriculas.exe"
         } else {
-          Write-Host "Build failed - executable not found"
+          Write-Host "Build failed - executable not found in either location"
+          Write-Host "Checking current directory structure:"
+          Get-ChildItem -Recurse -Filter "*.exe" | Select-Object FullName
           exit 1
         }
       shell: powershell
