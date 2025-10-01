@@ -1,15 +1,35 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import os
 
-datas = [('../matrículas', 'matrículas')]
+# Tenta incluir pasta de matrículas se existir (opcional para desenvolvimento)
+datas = []
+matriculas_path = os.path.join('..', 'matrículas')
+if os.path.exists(matriculas_path):
+    datas.append((matriculas_path, 'matrículas'))
+
 binaries = []
-hiddenimports = ['PIL._tkinter_finder', 'requests', 'matplotlib', 'fitz', 'pdf2image', 'dotenv', 'pytesseract', 'easyocr']
-tmp_ret = collect_all('matplotlib')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('PIL')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('easyocr')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['PIL._tkinter_finder', 'requests', 'fitz', 'pdf2image', 'dotenv']
+
+# Coleta dependências do PIL (essencial)
+try:
+    tmp_ret = collect_all('PIL')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except:
+    pass
+
+# Matplotlib e EasyOCR são opcionais - não falhar se não encontrados
+try:
+    tmp_ret = collect_all('matplotlib')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except:
+    pass
+
+try:
+    tmp_ret = collect_all('easyocr')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except:
+    pass
 
 
 a = Analysis(
